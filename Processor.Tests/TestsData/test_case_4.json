@@ -3,6 +3,7 @@
     "id": "msg-004",
     "content": "123 special chars !@#"
   },
+  "expectedOutcome": "output",
   "expectedOutput": {
     "id": "msg-004",
     "processedContent": "123 SPECIAL CHARS !@#"

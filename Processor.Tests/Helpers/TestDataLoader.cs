@@ -59,6 +59,7 @@ public static class TestDataLoader
 public class TestData
 {
     public InputMessage? Input { get; set; }
+    public string ExpectedOutcome { get; set; } = "output";
     public ExpectedOutputData? ExpectedOutput { get; set; }
 }
 

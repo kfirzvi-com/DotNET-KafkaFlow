@@ -3,6 +3,7 @@
     "id": "msg-003",
     "content": "kafkaflow message processor"
   },
+  "expectedOutcome": "output",
   "expectedOutput": {
     "id": "msg-003",
     "processedContent": "KAFKAFLOW MESSAGE PROCESSOR"

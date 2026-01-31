@@ -3,6 +3,7 @@
     "id": "msg-001",
     "content": "hello kafka"
   },
+  "expectedOutcome": "output",
   "expectedOutput": {
     "id": "msg-001",
     "processedContent": "HELLO KAFKA"
