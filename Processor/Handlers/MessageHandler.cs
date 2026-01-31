@@ -1,4 +1,5 @@
 using KafkaFlow;
+using Processor.Builders.Core;
 using Processor.Messages;
 
 namespace Processor.Handlers;
@@ -6,40 +7,56 @@ namespace Processor.Handlers;
 public class MessageHandler : IMessageHandler<InputMessage>
 {
     private readonly IMessageProducer<OutputMessage> _producer;
+    private readonly IMessageProducer<DeadLetterMessage> _deadLetterProducer;
+    private readonly IOutputMessageBuilder _outputMessageBuilder;
     private readonly ILogger<MessageHandler> _logger;
 
-    public MessageHandler(IMessageProducer<OutputMessage> producer, ILogger<MessageHandler> logger)
+    public MessageHandler(
+        IMessageProducer<OutputMessage> producer,
+        IMessageProducer<DeadLetterMessage> deadLetterProducer,
+        IOutputMessageBuilder outputMessageBuilder,
+        ILogger<MessageHandler> logger)
     {
         _producer = producer;
+        _deadLetterProducer = deadLetterProducer;
+        _outputMessageBuilder = outputMessageBuilder;
         _logger = logger;
     }
 
     public async Task Handle(IMessageContext context, InputMessage message)
     {
-        _logger.LogInformation("Processing message with ID: {MessageId}, Content: {Content}", 
+        _logger.LogInformation("Processing message with ID: {MessageId}, Content: {Content}",
             message.Id, message.Content);
 
-        // Process the input message
-        var processedContent = ProcessMessage(message.Content);
+        var outcome = _outputMessageBuilder.Build(message);
 
-        // Create output message
-        var outputMessage = new OutputMessage
+        switch (outcome.Status)
         {
-            Id = message.Id,
-            ProcessedContent = processedContent,
-            ProcessedAt = DateTime.UtcNow,
-            ProcessorName = Environment.MachineName
-        };
+            case BuildStatus.Ok:
+                await _producer.ProduceAsync(message.Id, outcome.Message!);
+                _logger.LogInformation("Message processed and sent to output topic");
+                break;
 
-        // Send to output topic
-        await _producer.ProduceAsync(message.Id, outputMessage);
+            case BuildStatus.DeadLetter:
+                var deadLetterMessage = new DeadLetterMessage
+                {
+                    Id = message.Id,
+                    Reason = outcome.Reason ?? "Unknown reason",
+                    OriginalMessage = message,
+                    FailedAt = DateTime.UtcNow
+                };
 
-        _logger.LogInformation("Message processed and sent to output topic");
-    }
+                await _deadLetterProducer.ProduceAsync(message.Id, deadLetterMessage);
+                _logger.LogWarning("Message sent to dead letter queue: {Reason}", outcome.Reason);
+                break;
 
-    private string ProcessMessage(string content)
-    {
-        // Simple processing: convert to uppercase
-        return content.ToUpperInvariant();
+            case BuildStatus.Drop:
+                _logger.LogWarning("Message dropped: {Reason}", outcome.Reason);
+                break;
+
+            default:
+                _logger.LogWarning("Unhandled build status: {Status}", outcome.Status);
+                break;
+        }
     }
 }

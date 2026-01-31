@@ -1,5 +1,7 @@
 using KafkaFlow;
 using KafkaFlow.Serializer;
+using Processor.Builders.Core;
+using Processor.Builders.FieldBuilders;
 using Processor.Handlers;
 using Processor.Messages;
 
@@ -8,6 +10,12 @@ await Host
     .ConfigureServices((hostContext, services) =>
     {
         var brokers = hostContext.Configuration.GetSection("Kafka:Brokers").Get<string[]>() ?? new[] { "localhost:9092" };
+
+        services.AddSingleton<OutputIdBuilder>();
+        services.AddSingleton<ProcessedContentBuilder>();
+        services.AddSingleton<ProcessedAtBuilder>();
+        services.AddSingleton<ProcessorNameBuilder>();
+        services.AddSingleton<IOutputMessageBuilder, OutputMessageBuilder>();
 
         services.AddKafka(kafka => kafka
             .AddCluster(cluster => cluster
@@ -26,6 +34,12 @@ await Host
                 )
                 .AddProducer<OutputMessage>(producer => producer
                     .DefaultTopic("output-topic")
+                    .AddMiddlewares(middlewares => middlewares
+                        .AddSerializer<JsonCoreSerializer>()
+                    )
+                )
+                .AddProducer<DeadLetterMessage>(producer => producer
+                    .DefaultTopic("dead-letter-topic")
                     .AddMiddlewares(middlewares => middlewares
                         .AddSerializer<JsonCoreSerializer>()
                     )

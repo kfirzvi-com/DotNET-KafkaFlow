@@ -61,6 +61,8 @@ public class TestData
     public InputMessage? Input { get; set; }
     public string ExpectedOutcome { get; set; } = "output";
     public ExpectedOutputData? ExpectedOutput { get; set; }
+    public string? ExpectedDeadLetterReason { get; set; }
+    public string? ExpectedDropReason { get; set; }
 }
 
 public class ExpectedOutputData

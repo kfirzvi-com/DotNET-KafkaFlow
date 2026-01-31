@@ -1,6 +1,8 @@
 using Xunit;
 using Moq;
 using KafkaFlow;
+using Processor.Builders.Core;
+using Processor.Builders.FieldBuilders;
 using Processor.Handlers;
 using Processor.Messages;
 using Processor.Tests.Helpers;
@@ -19,11 +21,21 @@ public class MessageHandlerTests
 
         // Arrange
         var mockProducer = new Mock<IMessageProducer<OutputMessage>>();
-        var mockDeadLetterProducer = new Mock<IMessageProducer<OutputMessage>>();
+        var mockDeadLetterProducer = new Mock<IMessageProducer<DeadLetterMessage>>();
         var mockLogger = new Mock<ILogger<MessageHandler>>();
         var mockContext = new Mock<IMessageContext>();
 
-        var handler = new MessageHandler(mockProducer.Object, mockLogger.Object);
+        var outputMessageBuilder = new OutputMessageBuilder(
+            new OutputIdBuilder(),
+            new ProcessedContentBuilder(),
+            new ProcessedAtBuilder(),
+            new ProcessorNameBuilder());
+
+        var handler = new MessageHandler(
+            mockProducer.Object,
+            mockDeadLetterProducer.Object,
+            outputMessageBuilder,
+            mockLogger.Object);
 
         // Setup the mock to return a DeliveryResult
         var deliveryResult = new DeliveryResult<byte[], byte[]>
@@ -39,7 +51,7 @@ public class MessageHandlerTests
             .Returns(Task.FromResult(deliveryResult));
 
         mockDeadLetterProducer
-            .Setup(p => p.ProduceAsync(It.IsAny<object>(), It.IsAny<OutputMessage>(), It.IsAny<KafkaFlow.IMessageHeaders>(), It.IsAny<int?>()))
+            .Setup(p => p.ProduceAsync(It.IsAny<object>(), It.IsAny<DeadLetterMessage>(), It.IsAny<KafkaFlow.IMessageHeaders>(), It.IsAny<int?>()))
             .Returns(Task.FromResult(deliveryResult));
 
         // Act
@@ -61,6 +73,9 @@ public class MessageHandlerTests
             case "dropped":
                 VerifyMessageNotSentToOutput(mockProducer);
                 VerifyMessageNotSentToDeadLetter(mockDeadLetterProducer);
+                var dropOutcome = outputMessageBuilder.Build(data.Input!);
+                Assert.Equal(BuildStatus.Drop, dropOutcome.Status);
+                Assert.Equal(data.ExpectedDropReason, dropOutcome.Reason);
                 break;
 
             default:
@@ -92,12 +107,15 @@ public class MessageHandlerTests
         );
     }
 
-    private static void VerifyMessageSentToDeadLetter(Mock<IMessageProducer<OutputMessage>> mockProducer, Helpers.TestData data)
+    private static void VerifyMessageSentToDeadLetter(Mock<IMessageProducer<DeadLetterMessage>> mockProducer, Helpers.TestData data)
     {
         mockProducer.Verify(
             p => p.ProduceAsync(
                 It.Is<object>(key => key.ToString() == data.Input!.Id),
-                It.IsAny<OutputMessage>(),
+                It.Is<DeadLetterMessage>(msg =>
+                    msg.Reason == data.ExpectedDeadLetterReason &&
+                    msg.OriginalMessage.Id == data.Input!.Id &&
+                    msg.OriginalMessage.Content == data.Input!.Content),
                 It.IsAny<KafkaFlow.IMessageHeaders>(),
                 It.IsAny<int?>()),
             Times.Once,
@@ -105,10 +123,10 @@ public class MessageHandlerTests
         );
     }
 
-    private static void VerifyMessageNotSentToDeadLetter(Mock<IMessageProducer<OutputMessage>> mockProducer)
+    private static void VerifyMessageNotSentToDeadLetter(Mock<IMessageProducer<DeadLetterMessage>> mockProducer)
     {
         mockProducer.Verify(
-            p => p.ProduceAsync(It.IsAny<object>(), It.IsAny<OutputMessage>(), It.IsAny<KafkaFlow.IMessageHeaders>(), It.IsAny<int?>()),
+            p => p.ProduceAsync(It.IsAny<object>(), It.IsAny<DeadLetterMessage>(), It.IsAny<KafkaFlow.IMessageHeaders>(), It.IsAny<int?>()),
             Times.Never,
             "Message should not be sent to dead letter queue"
         );
@@ -130,10 +148,21 @@ public class MessageHandlerTests
                 throw new InvalidOperationException("Invalid test data format: missing input");
             }
 
-            // expectedOutput is only required for 'output' outcome
-            if (data.ExpectedOutcome.Equals("output", StringComparison.OrdinalIgnoreCase) && data.ExpectedOutput == null)
+            var expectedOutcome = data.ExpectedOutcome.ToLowerInvariant();
+
+            if (expectedOutcome == "output" && data.ExpectedOutput == null)
             {
                 throw new InvalidOperationException("Invalid test data format: expectedOutput is required for 'output' outcome");
+            }
+
+            if (expectedOutcome == "deadletter" && string.IsNullOrWhiteSpace(data.ExpectedDeadLetterReason))
+            {
+                throw new InvalidOperationException("Invalid test data format: expectedDeadLetterReason is required for 'deadletter' outcome");
+            }
+
+            if (expectedOutcome == "dropped" && string.IsNullOrWhiteSpace(data.ExpectedDropReason))
+            {
+                throw new InvalidOperationException("Invalid test data format: expectedDropReason is required for 'dropped' outcome");
             }
 
             return data;

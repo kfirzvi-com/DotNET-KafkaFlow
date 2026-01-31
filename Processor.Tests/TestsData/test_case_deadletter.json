@@ -1,8 +1,9 @@
 {
   "input": {
-    "id": "msg-dlq-001",
-    "content": "this message should go to dead letter queue"
+    "id": "",
+    "content": "invalid message id"
   },
   "expectedOutcome": "deadletter",
+  "expectedDeadLetterReason": "Missing message id",
   "expectedOutput": null
 }
