@@ -1,0 +1,10 @@
+{
+  "input": {
+    "id": "msg-005",
+    "content": "empty string test"
+  },
+  "expectedOutput": {
+    "id": "msg-005",
+    "processedContent": "EMPTY STRING TEST"
+  }
+}

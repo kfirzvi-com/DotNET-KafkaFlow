@@ -1,0 +1,10 @@
+{
+  "input": {
+    "id": "msg-001",
+    "content": "hello kafka"
+  },
+  "expectedOutput": {
+    "id": "msg-001",
+    "processedContent": "HELLO KAFKA"
+  }
+}

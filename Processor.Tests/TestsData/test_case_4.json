@@ -1,0 +1,10 @@
+{
+  "input": {
+    "id": "msg-004",
+    "content": "123 special chars !@#"
+  },
+  "expectedOutput": {
+    "id": "msg-004",
+    "processedContent": "123 SPECIAL CHARS !@#"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "input": {
+    "id": "msg-002",
+    "content": "testing data driven tests"
+  },
+  "expectedOutput": {
+    "id": "msg-002",
+    "processedContent": "TESTING DATA DRIVEN TESTS"
+  }
+}
