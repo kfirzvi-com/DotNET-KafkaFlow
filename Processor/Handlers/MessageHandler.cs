@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using KafkaFlow;
 using Processor.Builders.Core;
+using Processor.Diagnostics;
 using Processor.Messages;
 
 namespace Processor.Handlers;
@@ -25,6 +27,8 @@ public class MessageHandler : IMessageHandler<InputMessage>
 
     public async Task Handle(IMessageContext context, InputMessage message)
     {
+        var stopwatch = Stopwatch.StartNew();
+
         _logger.LogInformation("Processing message with ID: {MessageId}, Content: {Content}",
             message.Id, message.Content);
 
@@ -34,6 +38,7 @@ public class MessageHandler : IMessageHandler<InputMessage>
         {
             case BuildStatus.Ok:
                 await _producer.ProduceAsync(message.Id, outcome.Message!);
+                ProcessorMetrics.RecordProcessed();
                 _logger.LogInformation("Message processed and sent to output topic");
                 break;
 
@@ -47,10 +52,12 @@ public class MessageHandler : IMessageHandler<InputMessage>
                 };
 
                 await _deadLetterProducer.ProduceAsync(message.Id, deadLetterMessage);
+                ProcessorMetrics.RecordDeadLettered();
                 _logger.LogWarning("Message sent to dead letter queue: {Reason}", outcome.Reason);
                 break;
 
             case BuildStatus.Drop:
+                ProcessorMetrics.RecordDropped();
                 _logger.LogWarning("Message dropped: {Reason}", outcome.Reason);
                 break;
 
@@ -58,5 +65,8 @@ public class MessageHandler : IMessageHandler<InputMessage>
                 _logger.LogWarning("Unhandled build status: {Status}", outcome.Status);
                 break;
         }
+
+        stopwatch.Stop();
+        ProcessorMetrics.RecordProcessingDuration(stopwatch.Elapsed.TotalMilliseconds);
     }
 }

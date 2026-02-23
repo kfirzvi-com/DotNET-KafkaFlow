@@ -11,7 +11,12 @@
     <PackageReference Include="KafkaFlow" Version="4.1.0" />
     <PackageReference Include="KafkaFlow.Extensions.Hosting" Version="4.1.0" />
     <PackageReference Include="KafkaFlow.Microsoft.DependencyInjection" Version="4.1.0" />
+    <PackageReference Include="KafkaFlow.OpenTelemetry" Version="4.1.0" />
     <PackageReference Include="KafkaFlow.Serializer.JsonCore" Version="4.1.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.2" />
+    <PackageReference Include="OpenTelemetry" Version="1.11.2" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.11.2" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.11.2" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.11.1" />
   </ItemGroup>
 </Project>
