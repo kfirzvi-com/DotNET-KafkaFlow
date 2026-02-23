@@ -17,6 +17,10 @@ await Host
     {
         var brokers = hostContext.Configuration.GetSection("Kafka:Brokers").Get<string[]>() ?? new[] { "localhost:9092" };
         var otlpEndpoint = hostContext.Configuration["OpenTelemetry:OtlpEndpoint"] ?? "http://localhost:8200";
+        var serviceName = hostContext.Configuration["OpenTelemetry:ServiceName"] ?? "kafkaflow-processor";
+        var serviceVersion = hostContext.Configuration["OpenTelemetry:ServiceVersion"] ?? "1.0.0";
+        var environment = hostContext.Configuration["OpenTelemetry:Environment"] ?? "development";
+        var site = hostContext.Configuration["OpenTelemetry:Site"] ?? "local";
 
         services.AddSingleton<OutputIdBuilder>();
         services.AddSingleton<ProcessedContentBuilder>();
@@ -27,8 +31,13 @@ await Host
         services.AddOpenTelemetry()
             .ConfigureResource(resource => resource
                 .AddService(
-                    serviceName: "kafkaflow-processor",
-                    serviceVersion: "1.0.0"))
+                    serviceName: serviceName,
+                    serviceVersion: serviceVersion)
+                .AddAttributes(new Dictionary<string, object>
+                {
+                    ["deployment.environment"] = environment,
+                    ["service.site"] = site,
+                }))
             .WithTracing(tracing => tracing
                 .AddSource(KafkaFlowInstrumentation.ActivitySourceName)
                 .AddOtlpExporter(options =>
