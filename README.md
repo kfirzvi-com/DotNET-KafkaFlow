@@ -272,10 +272,23 @@ Configuration (`appsettings.json`):
 
 ```json
 "Redis": { "ConnectionString": "localhost:6379" },
-"DataTypeSettings": { "HashKey": "datatype:settings", "RefreshSeconds": 15, "HeaderName": "data-type-id" }
+"DataTypeSettings": { "HashKey": "datatype:settings", "UseCache": true, "RefreshSeconds": 15, "HeaderName": "data-type-id" }
 ```
 
 Run Redis with the rest of the stack: `docker compose up -d redis`.
+
+### Cache vs. per-lookup
+
+`UseCache` toggles how the Redis repository serves reads:
+
+- **`true`** (default) — reads come from an in-memory snapshot, reloaded via `HGETALL` only after the
+  TTL; the hot path never hits Redis per message.
+- **`false`** — every lookup issues a Redis `HGET`. Useful for measuring the cost of caching.
+
+Every Redis round-trip is timed via `redis_operations_total{operation,status}` and
+`redis_operation_duration_milliseconds`, so Redis latency/throughput bottlenecks are visible on the
+Grafana dashboard. A load-test comparison of the two modes is in `REDIS_CACHE_LOADTEST.pdf`
+(cached issued 3 Redis ops for 50k messages vs. 50,000 uncached).
 
 ---
 
@@ -295,8 +308,11 @@ Exported metrics include:
 |--------|------|---------|
 | `messages_processed_total` | counter | Messages sent to the output topic |
 | `messages_dead_lettered_total` | counter | Messages routed to the dead-letter topic |
-| `messages_dropped_total` | counter | Messages dropped |
+| `messages_dropped_total` | counter | Messages dropped (empty content) |
+| `messages_filtered_total{reason}` | counter | Messages filtered by data-type settings (`inactive_data_type` / `unknown_data_type` / `missing_data_type_id`) |
 | `messages_processing_duration_milliseconds` | histogram | Per-message handling latency (p50/p95/p99) |
+| `redis_operations_total{operation,status}` | counter | Redis round-trips (`hash_get` / `hash_get_all`, `ok` / `error`) |
+| `redis_operation_duration_milliseconds` | histogram | Redis round-trip latency |
 | `dotnet_*` | various | .NET runtime instrumentation (GC, memory, CPU, threads) |
 | KafkaFlow instrumentation | various | Consumer/producer activity |
 

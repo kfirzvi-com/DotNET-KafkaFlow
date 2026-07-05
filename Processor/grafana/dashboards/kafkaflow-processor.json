@@ -12,7 +12,7 @@
     {
       "type": "stat",
       "title": "Processed (total)",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" }, "unit": "short" }, "overrides": [] },
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
@@ -22,8 +22,19 @@
     },
     {
       "type": "stat",
+      "title": "Filtered (total)",
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" }, "unit": "short" }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "refId": "A", "expr": "sum(messages_filtered_total)", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "stat",
       "title": "Dead-lettered (total)",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" }, "unit": "short" }, "overrides": [] },
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
@@ -34,7 +45,7 @@
     {
       "type": "stat",
       "title": "Dropped (total)",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "gridPos": { "h": 4, "w": 5, "x": 15, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "orange" }, "unit": "short" }, "overrides": [] },
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
@@ -45,7 +56,7 @@
     {
       "type": "stat",
       "title": "Throughput (msg/s)",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" }, "unit": "ops", "decimals": 2 }, "overrides": [] },
       "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
@@ -62,14 +73,26 @@
       "options": { "legend": { "displayMode": "table", "calcs": ["mean", "lastNotNull"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "targets": [
         { "refId": "A", "legendFormat": "processed", "expr": "sum(rate(messages_processed_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "refId": "B", "legendFormat": "dead-lettered", "expr": "sum(rate(messages_dead_lettered_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "refId": "C", "legendFormat": "dropped", "expr": "sum(rate(messages_dropped_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        { "refId": "B", "legendFormat": "filtered", "expr": "sum(rate(messages_filtered_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "C", "legendFormat": "dead-lettered", "expr": "sum(rate(messages_dead_lettered_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "D", "legendFormat": "dropped", "expr": "sum(rate(messages_dropped_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Filtered by reason (rate/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 20, "stacking": { "mode": "normal" } }, "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "calcs": ["mean", "lastNotNull"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "{{reason}}", "expr": "sum by (reason) (rate(messages_filtered_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
       ]
     },
     {
       "type": "timeseries",
       "title": "Processing duration (ms)",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "ms" }, "overrides": [] },
       "options": { "legend": { "displayMode": "table", "calcs": ["mean", "max"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
@@ -82,7 +105,7 @@
     {
       "type": "timeseries",
       "title": "Process memory (working set)",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "bytes" }, "overrides": [] },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
@@ -92,8 +115,32 @@
     },
     {
       "type": "timeseries",
+      "title": "Redis operations (ops/s) by op & status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15 }, "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "calcs": ["mean", "lastNotNull"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "{{operation}} ({{status}})", "expr": "sum by (operation, status) (rate(redis_operations_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis latency (ms)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "calcs": ["mean", "max"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "p50", "expr": "histogram_quantile(0.50, sum(rate(redis_operation_duration_milliseconds_bucket[5m])) by (le))", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "B", "legendFormat": "p95", "expr": "histogram_quantile(0.95, sum(rate(redis_operation_duration_milliseconds_bucket[5m])) by (le))", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "C", "legendFormat": "p99", "expr": "histogram_quantile(0.99, sum(rate(redis_operation_duration_milliseconds_bucket[5m])) by (le))", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
       "title": "GC collections & CPU (rate/s)",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" }, "overrides": [] },
       "options": { "legend": { "displayMode": "table", "calcs": ["mean", "lastNotNull"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },

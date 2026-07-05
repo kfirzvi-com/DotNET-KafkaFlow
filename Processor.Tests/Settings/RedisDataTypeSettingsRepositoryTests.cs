@@ -12,16 +12,22 @@ public class RedisDataTypeSettingsRepositoryTests
     private static RedisDataTypeSettingsRepository CreateRepository(
         HashEntry[] entries,
         out Mock<IDatabase> db,
-        int refreshSeconds = 15)
+        int refreshSeconds = 15,
+        bool useCache = true)
     {
         db = new Mock<IDatabase>();
         db.Setup(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
             .ReturnsAsync(entries);
 
+        // Single-field fetch used by the uncached path.
+        db.Setup(d => d.HashGetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<CommandFlags>()))
+            .ReturnsAsync((RedisKey _, RedisValue field, CommandFlags _) =>
+                entries.FirstOrDefault(e => e.Name == field).Value);
+
         var mux = new Mock<IConnectionMultiplexer>();
         mux.Setup(m => m.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(db.Object);
 
-        var options = Options.Create(new DataTypeSettingsOptions { RefreshSeconds = refreshSeconds });
+        var options = Options.Create(new DataTypeSettingsOptions { RefreshSeconds = refreshSeconds, UseCache = useCache });
         return new RedisDataTypeSettingsRepository(mux.Object, options, NullLogger<RedisDataTypeSettingsRepository>.Instance);
     }
 
@@ -103,6 +109,22 @@ public class RedisDataTypeSettingsRepositoryTests
 
         // TTL of 0 makes every read reload from Redis.
         db.Verify(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()), Times.Exactly(2));
+    }
+
+    [Fact]
+    public async Task Uncached_HitsRedisOnEveryFind()
+    {
+        var repo = CreateRepository(new[] { new HashEntry("weather", "true") }, out var db, useCache: false);
+
+        var s1 = await repo.FindByIdAsync("weather");
+        var s2 = await repo.FindByIdAsync("weather");
+
+        Assert.True(s1!.IsActive);
+        Assert.True(s2!.IsActive);
+
+        // No caching: each lookup is a single-field HGET, and HGETALL is never used.
+        db.Verify(d => d.HashGetAsync(It.IsAny<RedisKey>(), It.IsAny<RedisValue>(), It.IsAny<CommandFlags>()), Times.Exactly(2));
+        db.Verify(d => d.HashGetAllAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()), Times.Never);
     }
 
     [Fact]

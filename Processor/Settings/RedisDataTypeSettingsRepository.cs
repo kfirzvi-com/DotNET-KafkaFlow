@@ -1,16 +1,23 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Processor.Diagnostics;
 using StackExchange.Redis;
 
 namespace Processor.Settings;
 
 /// <summary>
-/// Redis-backed <see cref="IDataTypeSettingsRepository"/> with a self-refreshing in-memory cache.
-/// Reads are served from a cached snapshot of a Redis hash (field = data type id, value = JSON of
-/// the setting, or a bare "true"/"false"). Each query checks how long ago the cache was loaded and
-/// reloads from Redis only once the TTL (<see cref="DataTypeSettingsOptions.RefreshSeconds"/>) has
-/// passed, so the hot path avoids Redis on every message.
+/// Redis-backed <see cref="IDataTypeSettingsRepository"/>. Behaviour depends on
+/// <see cref="DataTypeSettingsOptions.UseCache"/>:
+/// <list type="bullet">
+/// <item>cached (default): reads are served from an in-memory snapshot of the Redis hash, reloaded
+/// only after the TTL (<see cref="DataTypeSettingsOptions.RefreshSeconds"/>) has passed, so the hot
+/// path avoids Redis on every message;</item>
+/// <item>uncached: every lookup hits Redis directly (HGET/HGETALL) — used to compare the two.</item>
+/// </list>
+/// Hash values may be JSON (<c>{ "dataTypeId": "...", "isActive": true }</c>) or a bare "true"/"false".
+/// Every Redis round-trip is timed via <see cref="ProcessorMetrics.RecordRedisOperation"/>.
 /// </summary>
 public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
 {
@@ -42,6 +49,11 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
 
     public async Task<IReadOnlyList<DataTypeSetting>> FindAllAsync(CancellationToken cancellationToken = default)
     {
+        if (!_options.UseCache)
+        {
+            return (await LoadAllFromRedisAsync()).Values.ToList();
+        }
+
         await EnsureFreshAsync(cancellationToken);
         return _cache.Values.ToList();
     }
@@ -51,6 +63,11 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
         if (string.IsNullOrWhiteSpace(dataTypeId))
         {
             return null;
+        }
+
+        if (!_options.UseCache)
+        {
+            return await FetchOneFromRedisAsync(dataTypeId);
         }
 
         await EnsureFreshAsync(cancellationToken);
@@ -79,7 +96,14 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
                 return;
             }
 
-            await ReloadAsync();
+            var map = await LoadAllFromRedisAsync();
+            if (map is not null)
+            {
+                _cache = map;
+            }
+
+            // Stamp the attempt (success or failure) so a failing Redis is retried at most once per TTL.
+            Volatile.Write(ref _lastLoadedTicks, Environment.TickCount64);
         }
         finally
         {
@@ -87,45 +111,71 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
         }
     }
 
-    /// <summary>Reloads the cache from Redis. Never throws: on failure the previous snapshot is kept.</summary>
-    private async Task ReloadAsync()
+    /// <summary>HGETALL the settings hash and parse it. Returns null on Redis failure (never throws).</summary>
+    private async Task<Dictionary<string, DataTypeSetting>?> LoadAllFromRedisAsync()
     {
+        var stopwatch = Stopwatch.StartNew();
+        HashEntry[] entries;
         try
         {
             var db = _redis.GetDatabase();
-            var entries = await db.HashGetAllAsync(_options.HashKey);
-
-            var map = new Dictionary<string, DataTypeSetting>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in entries)
-            {
-                var id = entry.Name.ToString();
-                var raw = entry.Value.ToString();
-
-                if (TryParse(id, raw, out var setting))
-                {
-                    map[setting.DataTypeId] = setting;
-                }
-                else
-                {
-                    _logger.LogWarning("Skipping unparseable data-type setting for id '{DataTypeId}': {Raw}", id, raw);
-                }
-            }
-
-            _cache = map;
-            _logger.LogInformation(
-                "Data-type settings cache reloaded: {Count} entries ({ActiveCount} active)",
-                map.Count, map.Values.Count(s => s.IsActive));
+            entries = await db.HashGetAllAsync(_options.HashKey);
+            stopwatch.Stop();
+            ProcessorMetrics.RecordRedisOperation("hash_get_all", "ok", stopwatch.Elapsed.TotalMilliseconds);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to reload data-type settings; keeping previous snapshot of {Count} entries", _cache.Count);
+            stopwatch.Stop();
+            ProcessorMetrics.RecordRedisOperation("hash_get_all", "error", stopwatch.Elapsed.TotalMilliseconds);
+            _logger.LogError(ex, "Failed to load data-type settings; keeping previous snapshot of {Count} entries", _cache.Count);
+            return null;
         }
-        finally
+
+        var map = new Dictionary<string, DataTypeSetting>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
         {
-            // Stamp the attempt (success or failure) so a failing Redis is retried at most once per TTL,
-            // not on every message.
-            Volatile.Write(ref _lastLoadedTicks, Environment.TickCount64);
+            var id = entry.Name.ToString();
+            var raw = entry.Value.ToString();
+
+            if (TryParse(id, raw, out var setting))
+            {
+                map[setting.DataTypeId] = setting;
+            }
+            else
+            {
+                _logger.LogWarning("Skipping unparseable data-type setting for id '{DataTypeId}': {Raw}", id, raw);
+            }
         }
+
+        return map;
+    }
+
+    /// <summary>HGET a single field. Returns null when absent or on Redis failure (never throws).</summary>
+    private async Task<DataTypeSetting?> FetchOneFromRedisAsync(string dataTypeId)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        RedisValue raw;
+        try
+        {
+            var db = _redis.GetDatabase();
+            raw = await db.HashGetAsync(_options.HashKey, dataTypeId);
+            stopwatch.Stop();
+            ProcessorMetrics.RecordRedisOperation("hash_get", "ok", stopwatch.Elapsed.TotalMilliseconds);
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            ProcessorMetrics.RecordRedisOperation("hash_get", "error", stopwatch.Elapsed.TotalMilliseconds);
+            _logger.LogError(ex, "Failed to fetch data-type setting for '{DataTypeId}'", dataTypeId);
+            return null;
+        }
+
+        if (raw.IsNullOrEmpty || !TryParse(dataTypeId, raw.ToString(), out var setting))
+        {
+            return null;
+        }
+
+        return setting;
     }
 
     private static bool TryParse(string id, string raw, out DataTypeSetting setting)
