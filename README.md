@@ -227,6 +227,71 @@ public class MessageHandler : IMessageHandler<InputMessage>
 
 ---
 
+## Data-Type Filtering (Redis)
+
+Records are filtered by **data type** before any processing. Each data type has a setting in Redis
+with a `dataTypeId` and an `isActive` flag; only records whose data type is active continue through
+the pipeline.
+
+- **Data type id source**: the Kafka message **header** `data-type-id` (configurable), falling back
+  to the message **key**.
+- **Filter rule**: a record is *filtered* (dropped, logged, offset committed) when its data type is
+  inactive, unknown (no setting), or the id is missing. This is a distinct outcome from a content
+  `Drop`, and is counted separately via `messages_filtered_total{reason=...}` where `reason` is a
+  bounded category (`inactive_data_type`, `unknown_data_type`, `missing_data_type_id`).
+- **Repository pattern**: `IDataTypeSettingsRepository` exposes `FindAllAsync` / `FindByIdAsync`.
+  The Redis implementation (`RedisDataTypeSettingsRepository`) serves reads from an in-memory cache
+  and reloads from Redis only after a TTL (`DataTypeSettings:RefreshSeconds`, default 15s) has
+  passed, so the hot path never hits Redis per message.
+- **Filter location**: the check runs at the start of `OutputMessageBuilder.Build(...)`.
+
+### Redis storage
+
+Settings live in a Redis hash (`DataTypeSettings:HashKey`, default `datatype:settings`) where each
+field is a data type id and each value is either a JSON object or a bare boolean:
+
+```bash
+# JSON form
+redis-cli HSET datatype:settings news '{"dataTypeId":"news","isActive":false}'
+# bare-boolean convenience form
+redis-cli HSET datatype:settings weather true
+```
+
+### Producing records with a data type id
+
+```bash
+# key carries the data type id (key.separator avoids the ':' inside JSON)
+printf '%s\n' \
+  'weather|{"Id":"m1","Content":"sunny"}' \
+  'news|{"Id":"m2","Content":"headline"}' \
+  | docker exec -i broker kafka-console-producer --bootstrap-server broker:9092 \
+      --topic input-topic --property parse.key=true --property key.separator='|'
+```
+
+Configuration (`appsettings.json`):
+
+```json
+"Redis": { "ConnectionString": "localhost:6379" },
+"DataTypeSettings": { "HashKey": "datatype:settings", "UseCache": true, "RefreshSeconds": 15, "HeaderName": "data-type-id" }
+```
+
+Run Redis with the rest of the stack: `docker compose up -d redis`.
+
+### Cache vs. per-lookup
+
+`UseCache` toggles how the Redis repository serves reads:
+
+- **`true`** (default) — reads come from an in-memory snapshot, reloaded via `HGETALL` only after the
+  TTL; the hot path never hits Redis per message.
+- **`false`** — every lookup issues a Redis `HGET`. Useful for measuring the cost of caching.
+
+Every Redis round-trip is timed via `redis_operations_total{operation,status}` and
+`redis_operation_duration_milliseconds`, so Redis latency/throughput bottlenecks are visible on the
+Grafana dashboard. A load-test comparison of the two modes is in `REDIS_CACHE_LOADTEST.pdf`
+(cached issued 3 Redis ops for 50k messages vs. 50,000 uncached).
+
+---
+
 ## Observability (OpenTelemetry + Prometheus + Grafana)
 
 The processor is an ASP.NET Core host that runs the KafkaFlow consumer/producers **and** exposes an
@@ -243,8 +308,11 @@ Exported metrics include:
 |--------|------|---------|
 | `messages_processed_total` | counter | Messages sent to the output topic |
 | `messages_dead_lettered_total` | counter | Messages routed to the dead-letter topic |
-| `messages_dropped_total` | counter | Messages dropped |
+| `messages_dropped_total` | counter | Messages dropped (empty content) |
+| `messages_filtered_total{reason}` | counter | Messages filtered by data-type settings (`inactive_data_type` / `unknown_data_type` / `missing_data_type_id`) |
 | `messages_processing_duration_milliseconds` | histogram | Per-message handling latency (p50/p95/p99) |
+| `redis_operations_total{operation,status}` | counter | Redis round-trips (`hash_get` / `hash_get_all`, `ok` / `error`) |
+| `redis_operation_duration_milliseconds` | histogram | Redis round-trip latency |
 | `dotnet_*` | various | .NET runtime instrumentation (GC, memory, CPU, threads) |
 | KafkaFlow instrumentation | various | Consumer/producer activity |
 

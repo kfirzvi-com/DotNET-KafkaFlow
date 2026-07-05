@@ -5,8 +5,10 @@ using Processor.Builders.Core;
 using Processor.Builders.FieldBuilders;
 using Processor.Handlers;
 using Processor.Messages;
+using Processor.Settings;
 using Processor.Tests.Helpers;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Confluent.Kafka;
 
 namespace Processor.Tests;
@@ -20,21 +22,36 @@ public class MessageHandlerTests
         var data = DeserializeTestData(fileName, fileContent);
 
         // Arrange
+        const string dataTypeId = "test-type";
+
         var mockProducer = new Mock<IMessageProducer<OutputMessage>>();
         var mockDeadLetterProducer = new Mock<IMessageProducer<DeadLetterMessage>>();
         var mockLogger = new Mock<ILogger<MessageHandler>>();
+
+        // Data type is active, so records pass the filter and exercise the existing pipeline.
+        var mockRepository = new Mock<IDataTypeSettingsRepository>();
+        mockRepository
+            .Setup(r => r.FindByIdAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DataTypeSetting { DataTypeId = dataTypeId, IsActive = true });
+
+        // The handler reads the data type id from the message key (no header set up here).
         var mockContext = new Mock<IMessageContext>();
+        mockContext.Setup(c => c.Message).Returns(new Message(dataTypeId, data.Input!));
+
+        var options = Options.Create(new DataTypeSettingsOptions());
 
         var outputMessageBuilder = new OutputMessageBuilder(
             new OutputIdBuilder(),
             new ProcessedContentBuilder(),
             new ProcessedAtBuilder(),
-            new ProcessorNameBuilder());
+            new ProcessorNameBuilder(),
+            mockRepository.Object);
 
         var handler = new MessageHandler(
             mockProducer.Object,
             mockDeadLetterProducer.Object,
             outputMessageBuilder,
+            options,
             mockLogger.Object);
 
         // Setup the mock to return a DeliveryResult
@@ -73,7 +90,7 @@ public class MessageHandlerTests
             case "dropped":
                 VerifyMessageNotSentToOutput(mockProducer);
                 VerifyMessageNotSentToDeadLetter(mockDeadLetterProducer);
-                var dropOutcome = outputMessageBuilder.Build(data.Input!);
+                var dropOutcome = await outputMessageBuilder.Build(data.Input!, dataTypeId);
                 Assert.Equal(BuildStatus.Drop, dropOutcome.Status);
                 Assert.Equal(data.ExpectedDropReason, dropOutcome.Reason);
                 break;

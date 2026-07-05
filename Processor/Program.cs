@@ -10,6 +10,8 @@ using Processor.Builders.FieldBuilders;
 using Processor.Diagnostics;
 using Processor.Handlers;
 using Processor.Messages;
+using Processor.Settings;
+using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,11 +24,22 @@ var serviceVersion = configuration["OpenTelemetry:ServiceVersion"] ?? "1.0.0";
 var environment = configuration["OpenTelemetry:Environment"] ?? "development";
 var site = configuration["OpenTelemetry:Site"] ?? "local";
 var metricsPort = configuration.GetValue<int?>("Metrics:Port") ?? 8080;
+var redisConnectionString = configuration["Redis:ConnectionString"] ?? "localhost:6379";
 
 // Expose the /metrics scraping endpoint (and nothing else) on a dedicated port.
 builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(metricsPort));
 
 var services = builder.Services;
+
+// Data-type settings: Redis-backed repository with an in-memory TTL cache.
+services.Configure<DataTypeSettingsOptions>(configuration.GetSection(DataTypeSettingsOptions.SectionName));
+services.AddSingleton<IConnectionMultiplexer>(_ =>
+{
+    var config = ConfigurationOptions.Parse(redisConnectionString);
+    config.AbortOnConnectFail = false; // don't crash startup if Redis is briefly unavailable
+    return ConnectionMultiplexer.Connect(config);
+});
+services.AddSingleton<IDataTypeSettingsRepository, RedisDataTypeSettingsRepository>();
 
 services.AddSingleton<OutputIdBuilder>();
 services.AddSingleton<ProcessedContentBuilder>();
