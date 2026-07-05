@@ -8,14 +8,16 @@ public static class ProcessorMetrics
 
     private static readonly Meter Meter = new(MeterName, "1.0.0");
 
+    // No unit is set on the counters: the Prometheus exporter turns a unit into a name
+    // suffix, which would produce the redundant "messages_processed_messages_total".
     private static readonly Counter<long> MessagesProcessed =
-        Meter.CreateCounter<long>("messages_processed", "messages", "Total messages successfully processed");
+        Meter.CreateCounter<long>("messages_processed", unit: null, "Total messages successfully processed");
 
     private static readonly Counter<long> MessagesDeadLettered =
-        Meter.CreateCounter<long>("messages_dead_lettered", "messages", "Total messages sent to dead letter queue");
+        Meter.CreateCounter<long>("messages_dead_lettered", unit: null, "Total messages sent to dead letter queue");
 
     private static readonly Counter<long> MessagesDropped =
-        Meter.CreateCounter<long>("messages_dropped", "messages", "Total messages dropped");
+        Meter.CreateCounter<long>("messages_dropped", unit: null, "Total messages dropped");
 
     private static readonly Histogram<double> MessageProcessingDuration =
         Meter.CreateHistogram<double>("messages_processing_duration", "ms", "Message processing duration in milliseconds");

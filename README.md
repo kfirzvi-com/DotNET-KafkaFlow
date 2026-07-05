@@ -227,6 +227,60 @@ public class MessageHandler : IMessageHandler<InputMessage>
 
 ---
 
+## Observability (OpenTelemetry + Prometheus + Grafana)
+
+The processor is an ASP.NET Core host that runs the KafkaFlow consumer/producers **and** exposes an
+OpenTelemetry-backed metrics endpoint for Prometheus to scrape.
+
+### Metrics endpoint
+
+- **`GET http://localhost:8080/metrics`** — Prometheus exposition format (OpenTelemetry `AddPrometheusExporter`).
+- Port is configurable via `Metrics:Port` in `appsettings.json`.
+
+Exported metrics include:
+
+| Metric | Type | Meaning |
+|--------|------|---------|
+| `messages_processed_total` | counter | Messages sent to the output topic |
+| `messages_dead_lettered_total` | counter | Messages routed to the dead-letter topic |
+| `messages_dropped_total` | counter | Messages dropped |
+| `messages_processing_duration_milliseconds` | histogram | Per-message handling latency (p50/p95/p99) |
+| `dotnet_*` | various | .NET runtime instrumentation (GC, memory, CPU, threads) |
+| KafkaFlow instrumentation | various | Consumer/producer activity |
+
+Traces and metrics are also pushed via OTLP to the Elastic APM server (`OpenTelemetry:OtlpEndpoint`) when it is running.
+
+### Running the observability stack
+
+```bash
+cd Processor
+
+# 1. Start Kafka + Prometheus + Grafana (skip the heavier ELK stack)
+docker compose up -d zookeeper broker prometheus grafana
+
+# 2. Run the processor (exposes /metrics on :8080)
+dotnet run --project .
+
+# 3. Produce a few messages (note: JSON keys are PascalCase — Id / Content)
+printf '%s\n' \
+  '{"Id":"msg-001","Content":"hello kafka"}' \
+  '{"Id":"","Content":"missing id -> dead letter"}' \
+  '{"Id":"msg-002","Content":""}' \
+  | docker exec -i broker kafka-console-producer --bootstrap-server broker:9092 --topic input-topic
+```
+
+Then open:
+
+- **Metrics**: <http://localhost:8080/metrics>
+- **Prometheus**: <http://localhost:9090> (target `kafkaflow-processor` should be `UP` under Status → Targets)
+- **Grafana**: <http://localhost:3000> — anonymous access is enabled; the **KafkaFlow Processor** dashboard is
+  auto-provisioned with a Prometheus datasource.
+
+Prometheus reaches the host-run app via `host.docker.internal:8080` (configured in `prometheus/prometheus.yml`).
+In Kubernetes, drop this static target and let Prometheus scrape the pod's `/metrics` endpoint directly.
+
+---
+
 ## Building & Testing
 
 ### Building the Project
