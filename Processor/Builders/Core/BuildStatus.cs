@@ -4,5 +4,6 @@ public enum BuildStatus
 {
     Ok,
     DeadLetter,
-    Drop
+    Drop,
+    Filtered
 }

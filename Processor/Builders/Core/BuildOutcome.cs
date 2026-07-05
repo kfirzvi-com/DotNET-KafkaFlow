@@ -20,4 +20,6 @@ public class BuildOutcome
     public static BuildOutcome DeadLetter(string reason) => new(BuildStatus.DeadLetter, null, reason);
 
     public static BuildOutcome Drop(string reason) => new(BuildStatus.Drop, null, reason);
+
+    public static BuildOutcome Filtered(string reason) => new(BuildStatus.Filtered, null, reason);
 }
