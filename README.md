@@ -292,6 +292,27 @@ Grafana dashboard. A load-test comparison of the two modes is in `REDIS_CACHE_LO
 
 ---
 
+## Consumer Worker Tuning
+
+The consumer's parallelism is configurable:
+
+| Setting | Meaning |
+|---------|---------|
+| `Kafka:WorkersCount` | Number of worker loops (threads/tasks) processing messages in parallel. Workers are **not** partition consumers — one Kafka consumer fetches and the distribution strategy routes each message to a worker. |
+| `Kafka:BufferSize` | Per-worker bounded prefetch channel. Total in-flight ≈ `WorkersCount × BufferSize`. |
+| `Benchmark:WorkMicros` | Synthetic CPU work per message (µs) for load testing; `0` = disabled (no effect on normal runs). |
+
+The consumer uses **`FreeWorkerDistributionStrategy`** because this system is **keyless**. With the
+default `BytesSum` strategy, null-key messages all hash to worker 0 — i.e. single-threaded regardless
+of `WorkersCount`. `FreeWorker` routes each message to any free worker (no per-key ordering).
+
+A load-test sweep (`WORKERS_BUFFER_TUNING.pdf`) found: throughput scales with workers up to ≈ the
+host core count, then flattens while per-message latency rises (CPU oversubscription); buffer size has
+negligible effect on a keyless/CPU-bound workload. **Rule of thumb: set `WorkersCount` ≈ the pod's CPU
+allotment, keep `BufferSize` ~100.**
+
+---
+
 ## Observability (OpenTelemetry + Prometheus + Grafana)
 
 The processor is an ASP.NET Core host that runs the KafkaFlow consumer/producers **and** exposes an
