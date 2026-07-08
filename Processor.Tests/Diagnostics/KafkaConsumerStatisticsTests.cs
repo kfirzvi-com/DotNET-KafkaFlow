@@ -1,4 +1,5 @@
 using Processor.Diagnostics;
+using Processor.Infrastructure.Diagnostics;
 using Xunit;
 
 namespace Processor.Tests.Diagnostics;

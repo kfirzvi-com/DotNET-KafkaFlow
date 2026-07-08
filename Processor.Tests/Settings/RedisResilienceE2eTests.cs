@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
-using Processor.Settings;
+using Processor.Domain.DataTypes;
+using Processor.Infrastructure.DataTypes;
+using Processor.Application;
 using StackExchange.Redis;
 using Testcontainers.Redis;
 using Xunit;

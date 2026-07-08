@@ -3,8 +3,10 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Moq;
-using Processor.Health;
-using Processor.Settings;
+using Processor.Infrastructure.Health;
+using Processor.Domain.DataTypes;
+using Processor.Infrastructure.DataTypes;
+using Processor.Application;
 using StackExchange.Redis;
 using Xunit;
 

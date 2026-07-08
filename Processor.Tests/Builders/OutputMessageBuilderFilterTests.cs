@@ -1,8 +1,10 @@
 using Moq;
-using Processor.Builders.Core;
-using Processor.Builders.FieldBuilders;
-using Processor.Messages;
-using Processor.Settings;
+using Processor.Domain.Building;
+using Processor.Domain.Building.FieldBuilders;
+using Processor.Domain.Messages;
+using Processor.Domain.DataTypes;
+using Processor.Infrastructure.DataTypes;
+using Processor.Application;
 using Xunit;
 
 namespace Processor.Tests.Builders;

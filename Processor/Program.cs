@@ -8,13 +8,15 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
-using Processor.Builders.Core;
-using Processor.Builders.FieldBuilders;
+using Processor.Domain.Building;
+using Processor.Domain.Building.FieldBuilders;
 using Processor.Diagnostics;
-using Processor.Handlers;
-using Processor.Health;
-using Processor.Messages;
-using Processor.Settings;
+using Processor.Infrastructure.Diagnostics;
+using Processor.Application;
+using Processor.Infrastructure.Health;
+using Processor.Domain.Messages;
+using Processor.Domain.DataTypes;
+using Processor.Infrastructure.DataTypes;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -112,7 +114,7 @@ services.AddOpenTelemetry()
         }));
 
 services.AddKafkaFlowHostedService(kafka => kafka
-    .UseLogHandler<Processor.Diagnostics.MicrosoftLogHandler>()
+    .UseLogHandler<Processor.Infrastructure.Diagnostics.MicrosoftLogHandler>()
     .AddOpenTelemetryInstrumentation()
     .AddCluster(cluster => cluster
         .WithBrokers(brokers)
