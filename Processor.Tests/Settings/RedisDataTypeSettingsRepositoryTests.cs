@@ -15,148 +15,124 @@ public class RedisDataTypeSettingsRepositoryTests
     /// <summary>
     /// Builds a repository over an in-memory key/value store. Settings live under
     /// <c>datatypesettings:{id}</c> String keys; GET and SCAN+MGET are backed by the dictionary.
+    /// When <paramref name="failing"/> is true, Redis calls throw (simulating an outage).
     /// </summary>
     private static RedisDataTypeSettingsRepository CreateRepository(
         (string id, string value)[] settings,
         out Mock<IDatabase> db,
-        out Mock<IServer> server,
-        int refreshSeconds = 15,
-        bool useCache = true)
+        bool useCache = true,
+        bool failing = false)
     {
         var store = settings.ToDictionary(s => Prefix + s.id, s => s.value, StringComparer.OrdinalIgnoreCase);
-
-        RedisValue ValueFor(RedisKey k) =>
-            store.TryGetValue(k.ToString(), out var v) ? v : RedisValue.Null;
+        RedisValue ValueFor(RedisKey k) => store.TryGetValue(k.ToString(), out var v) ? v : RedisValue.Null;
 
         db = new Mock<IDatabase>();
-        // Single GET (uncached path)
-        db.Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync((RedisKey k, CommandFlags _) => ValueFor(k));
-        // MGET (cache reload)
-        db.Setup(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()))
-            .ReturnsAsync((RedisKey[] ks, CommandFlags _) => ks.Select(ValueFor).ToArray());
-
-        server = new Mock<IServer>();
-        server.Setup(s => s.Keys(It.IsAny<int>(), It.IsAny<RedisValue>(), It.IsAny<int>(),
-                                 It.IsAny<long>(), It.IsAny<int>(), It.IsAny<CommandFlags>()))
-            .Returns(store.Keys.Select(k => (RedisKey)k));
+        var server = new Mock<IServer>();
+        if (failing)
+        {
+            var boom = new RedisConnectionException(ConnectionFailureType.UnableToConnect, "down");
+            db.Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>())).ThrowsAsync(boom);
+            db.Setup(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>())).ThrowsAsync(boom);
+            server.Setup(s => s.Keys(It.IsAny<int>(), It.IsAny<RedisValue>(), It.IsAny<int>(),
+                                     It.IsAny<long>(), It.IsAny<int>(), It.IsAny<CommandFlags>())).Throws(boom);
+        }
+        else
+        {
+            db.Setup(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync((RedisKey k, CommandFlags _) => ValueFor(k));
+            db.Setup(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()))
+                .ReturnsAsync((RedisKey[] ks, CommandFlags _) => ks.Select(ValueFor).ToArray());
+            server.Setup(s => s.Keys(It.IsAny<int>(), It.IsAny<RedisValue>(), It.IsAny<int>(),
+                                     It.IsAny<long>(), It.IsAny<int>(), It.IsAny<CommandFlags>()))
+                .Returns(store.Keys.Select(k => (RedisKey)k));
+        }
 
         var mux = new Mock<IConnectionMultiplexer>();
         mux.Setup(m => m.GetDatabase(It.IsAny<int>(), It.IsAny<object>())).Returns(db.Object);
         mux.Setup(m => m.GetEndPoints(It.IsAny<bool>())).Returns(new EndPoint[] { new DnsEndPoint("localhost", 6379) });
         mux.Setup(m => m.GetServer(It.IsAny<EndPoint>(), It.IsAny<object>())).Returns(server.Object);
 
-        var options = Options.Create(new DataTypeSettingsOptions
-        {
-            KeyPrefix = Prefix, RefreshSeconds = refreshSeconds, UseCache = useCache,
-        });
+        var options = Options.Create(new DataTypeSettingsOptions { KeyPrefix = Prefix, UseCache = useCache });
         return new RedisDataTypeSettingsRepository(mux.Object, options, NullLogger<RedisDataTypeSettingsRepository>.Instance);
     }
 
     [Fact]
-    public async Task FindByIdAsync_ReturnsActiveSetting_FromBareBoolValue()
+    public async Task InitializeAsync_LoadsSnapshot_ThenReadsAreServedFromMemory()
     {
-        var repo = CreateRepository(new[] { ("weather", "true") }, out _, out _);
+        var repo = CreateRepository(new[] { ("weather", "true"), ("news", "false") }, out var db);
 
-        var setting = await repo.FindByIdAsync("weather");
+        await repo.InitializeAsync();
 
-        Assert.NotNull(setting);
-        Assert.Equal("weather", setting!.DataTypeId);
-        Assert.True(setting.IsActive);
+        Assert.True(repo.IsLoaded);
+        Assert.Equal(2, repo.Count);
+        Assert.True((await repo.FindByIdAsync("weather"))!.IsActive);
+        Assert.False((await repo.FindByIdAsync("news"))!.IsActive);
+        Assert.Null(await repo.FindByIdAsync("unknown"));
+
+        // The snapshot loaded once (MGET); the three reads touched Redis zero more times.
+        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()), Times.Once);
+        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()), Times.Never);
     }
 
     [Fact]
-    public async Task FindByIdAsync_ReturnsSetting_FromJsonValue()
+    public async Task CachedReads_NeverTouchRedis_EvenBeforeLoad()
     {
-        var repo = CreateRepository(
-            new[] { ("news", "{\"dataTypeId\":\"news\",\"isActive\":false}") }, out _, out _);
+        var repo = CreateRepository(new[] { ("weather", "true") }, out var db);
 
-        var setting = await repo.FindByIdAsync("news");
-
-        Assert.NotNull(setting);
-        Assert.False(setting!.IsActive);
+        // No load yet: reads return null but must not hit Redis (the refresh service owns loading).
+        Assert.Null(await repo.FindByIdAsync("weather"));
+        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()), Times.Never);
+        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()), Times.Never);
     }
 
     [Fact]
     public async Task FindByIdAsync_IsCaseInsensitive()
     {
-        var repo = CreateRepository(new[] { ("Weather", "true") }, out _, out _);
-
-        var setting = await repo.FindByIdAsync("weather");
-
-        Assert.NotNull(setting);
-        Assert.True(setting!.IsActive);
+        var repo = CreateRepository(new[] { ("Weather", "true") }, out _);
+        await repo.InitializeAsync();
+        Assert.True((await repo.FindByIdAsync("weather"))!.IsActive);
     }
 
     [Fact]
-    public async Task FindByIdAsync_ReturnsNull_ForUnknownDataType()
+    public async Task InitializeAsync_Throws_WhenRedisDown()
     {
-        var repo = CreateRepository(new[] { ("weather", "true") }, out _, out _);
+        var repo = CreateRepository(Array.Empty<(string, string)>(), out _, failing: true);
 
-        Assert.Null(await repo.FindByIdAsync("does-not-exist"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => repo.InitializeAsync());
+        Assert.False(repo.IsLoaded);
     }
 
     [Fact]
-    public async Task FindByIdAsync_ReturnsNull_ForNullOrEmptyId()
+    public async Task RefreshAsync_Failure_KeepsStaleSnapshot()
     {
-        var repo = CreateRepository(new[] { ("weather", "true") }, out var db, out _);
+        // Load once successfully...
+        var repo = CreateRepository(new[] { ("weather", "true") }, out var db);
+        await repo.InitializeAsync();
+        Assert.True(repo.IsLoaded);
+        var loadedAt = repo.LastSuccessfulLoadUtc;
 
-        Assert.Null(await repo.FindByIdAsync(null!));
-        Assert.Null(await repo.FindByIdAsync("  "));
+        // ...then Redis goes down: refresh fails but the stale snapshot is retained.
+        var boom = new RedisConnectionException(ConnectionFailureType.UnableToConnect, "down");
+        db.Setup(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>())).ThrowsAsync(boom);
 
-        // A blank id must not even touch Redis.
-        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()), Times.Never);
-        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()), Times.Never);
-    }
+        var ok = await repo.RefreshAsync();
 
-    [Fact]
-    public async Task Reads_AreCached_WithinTtl()
-    {
-        var repo = CreateRepository(new[] { ("weather", "true") }, out var db, out _, refreshSeconds: 60);
-
-        await repo.FindByIdAsync("weather");
-        await repo.FindByIdAsync("weather");
-        await repo.FindAllAsync();
-
-        // Only the first query loaded from Redis (MGET); the rest were served from cache.
-        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()), Times.Once);
-    }
-
-    [Fact]
-    public async Task Cache_Reloads_WhenTtlIsZero()
-    {
-        var repo = CreateRepository(new[] { ("weather", "true") }, out var db, out _, refreshSeconds: 0);
-
-        await repo.FindByIdAsync("weather");
-        await repo.FindByIdAsync("weather");
-
-        // TTL of 0 makes every read reload from Redis (SCAN + MGET).
-        db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()), Times.Exactly(2));
+        Assert.False(ok);
+        Assert.True(repo.IsLoaded);                                   // still serving
+        Assert.Equal(1, repo.Count);                                  // stale entry kept
+        Assert.True((await repo.FindByIdAsync("weather"))!.IsActive); // still resolves
+        Assert.Equal(loadedAt, repo.LastSuccessfulLoadUtc);           // timestamp not advanced
     }
 
     [Fact]
     public async Task Uncached_HitsRedisOnEveryFind()
     {
-        var repo = CreateRepository(new[] { ("weather", "true") }, out var db, out _, useCache: false);
+        var repo = CreateRepository(new[] { ("weather", "true") }, out var db, useCache: false);
 
-        var s1 = await repo.FindByIdAsync("weather");
-        var s2 = await repo.FindByIdAsync("weather");
+        Assert.True((await repo.FindByIdAsync("weather"))!.IsActive);
+        Assert.True((await repo.FindByIdAsync("weather"))!.IsActive);
 
-        Assert.True(s1!.IsActive);
-        Assert.True(s2!.IsActive);
-
-        // No caching: each lookup is a single GET, and the bulk MGET is never used.
         db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey>(), It.IsAny<CommandFlags>()), Times.Exactly(2));
         db.Verify(d => d.StringGetAsync(It.IsAny<RedisKey[]>(), It.IsAny<CommandFlags>()), Times.Never);
-    }
-
-    [Fact]
-    public async Task FindAllAsync_ReturnsAllParsedSettings()
-    {
-        var repo = CreateRepository(new[] { ("weather", "true"), ("news", "false") }, out _, out _);
-
-        var all = await repo.FindAllAsync();
-
-        Assert.Equal(2, all.Count);
     }
 }

@@ -316,6 +316,34 @@ allotment, keep `BufferSize` ~100.**
 
 ---
 
+## Health & Resilience
+
+The processor is designed to fail loudly and stay serving through transient Redis blips:
+
+- **Fail-fast startup.** The settings refresh service loads the snapshot before the consumer starts; if
+  Redis is unreachable or the initial load fails, `StartAsync` throws and **the host fails to start**
+  (non-zero exit) so Kubernetes restarts the pod. It never begins consuming without settings.
+- **Stale-tolerant refresh.** A background worker reloads the snapshot every `RefreshSeconds`. A failed
+  refresh **keeps the previous snapshot**, logs a warning, and increments
+  `datatype_settings_load_failures_total` — it never clears settings (so a data type isn't wrongly
+  treated as inactive because a reload failed).
+- **No hammering.** In cached mode the message path reads only the in-memory snapshot, so a Redis
+  outage produces **zero** per-message Redis calls regardless of throughput.
+
+### Kubernetes probes
+
+Exposed on the same port as `/metrics`:
+
+| Endpoint | Checks | Fail behavior |
+|----------|--------|---------------|
+| `GET /health/live` | process only (no dependencies) | a Redis blip won't get the pod killed |
+| `GET /health/ready` | Redis reachable (PING) + settings snapshot loaded/fresh | reports NotReady (503) during a Redis outage; Degraded while serving a stale snapshot |
+
+```yaml
+livenessProbe:  { httpGet: { path: /health/live,  port: 8080 }, periodSeconds: 10 }
+readinessProbe: { httpGet: { path: /health/ready, port: 8080 }, periodSeconds: 10 }
+```
+
 ## Observability (OpenTelemetry + Prometheus + Grafana)
 
 The processor is an ASP.NET Core host that runs the KafkaFlow consumer/producers **and** exposes an
@@ -337,8 +365,13 @@ Exported metrics include:
 | `messages_processing_duration_milliseconds` | histogram | Per-message handling latency (p50/p95/p99) |
 | `redis_operations_total{operation,status}` | counter | Redis round-trips (`get` / `load_all`, `ok` / `error`) |
 | `redis_operation_duration_milliseconds` | histogram | Redis round-trip latency |
+| `datatype_settings_reloads_total` / `datatype_settings_load_failures_total` | counter | Successful vs. failed settings reloads from Redis |
+| `datatype_settings_snapshot_size` / `datatype_settings_since_load_seconds` | gauge | Snapshot entry count; seconds since last successful load |
+| `kafka_consumer_lag` / `kafka_consumer_assignment_partitions` / `kafka_consumer_fetchq_messages` | gauge | From librdkafka statistics: total lag, assigned partitions, fetch-queue depth |
+| `kafka_consumer_rebalances_total` / `kafka_consumer_rx_messages_total` | counter | Rebalance count; messages received from brokers |
+| `kafka_broker_rtt_avg_milliseconds` / `kafka_broker_rtt_max_milliseconds` | gauge | Broker round-trip time (from statistics) |
 | `dotnet_*` | various | .NET runtime instrumentation (GC, memory, CPU, threads) |
-| KafkaFlow instrumentation | various | Consumer/producer activity |
+| KafkaFlow OpenTelemetry | traces | Consumer/producer spans (KafkaFlow exports traces, not metrics — Kafka metrics above come from librdkafka statistics) |
 
 Traces and metrics are also pushed via OTLP to the Elastic APM server (`OpenTelemetry:OtlpEndpoint`) when it is running.
 

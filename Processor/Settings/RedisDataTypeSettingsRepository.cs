@@ -13,11 +13,13 @@ namespace Processor.Settings;
 /// (a bare "true"/"false" is also accepted). Behaviour depends on
 /// <see cref="DataTypeSettingsOptions.UseCache"/>:
 /// <list type="bullet">
-/// <item>cached (default): reads are served from an in-memory snapshot, reloaded only after the TTL
-/// (<see cref="DataTypeSettingsOptions.RefreshSeconds"/>) via SCAN + MGET, so the hot path avoids Redis;</item>
-/// <item>uncached: every lookup issues a Redis GET — used to compare the two.</item>
+/// <item>cached (default): reads are served purely from an in-memory snapshot. The snapshot is loaded
+/// once at startup (<see cref="InitializeAsync"/>, which throws so the app crashes if Redis is down)
+/// and refreshed on a schedule by <c>DataTypeSettingsRefreshService</c> via <see cref="RefreshAsync"/>.
+/// A failed refresh keeps the previous snapshot (logged + counted), so the message path never touches
+/// Redis and never hammers it during an outage;</item>
+/// <item>uncached: every lookup issues a Redis GET — used only for the cache-vs-lookup experiment.</item>
 /// </list>
-/// Every Redis round-trip is timed via <see cref="ProcessorMetrics.RecordRedisOperation"/>.
 /// </summary>
 public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
 {
@@ -26,15 +28,13 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
     private readonly IConnectionMultiplexer _redis;
     private readonly DataTypeSettingsOptions _options;
     private readonly ILogger<RedisDataTypeSettingsRepository> _logger;
-    private readonly long _ttlMs;
     private readonly SemaphoreSlim _reloadLock = new(1, 1);
 
     // Volatile reference swap gives lock-free reads; a reader always sees a fully-built snapshot.
     private volatile IReadOnlyDictionary<string, DataTypeSetting> _cache =
         new Dictionary<string, DataTypeSetting>(StringComparer.OrdinalIgnoreCase);
 
-    // Monotonic timestamp (ms) of the last load attempt. long.MinValue => never loaded.
-    private long _lastLoadedTicks = long.MinValue;
+    private volatile bool _loaded;
 
     public RedisDataTypeSettingsRepository(
         IConnectionMultiplexer redis,
@@ -44,17 +44,25 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
         _redis = redis;
         _options = options.Value;
         _logger = logger;
-        _ttlMs = (long)Math.Max(0, _options.RefreshSeconds) * 1000;
     }
+
+    /// <summary>True once at least one successful load has populated the snapshot.</summary>
+    public bool IsLoaded => _loaded;
+
+    /// <summary>UTC time of the last successful load (for health reporting), or null if never.</summary>
+    public DateTimeOffset? LastSuccessfulLoadUtc { get; private set; }
+
+    /// <summary>Number of settings currently in the snapshot.</summary>
+    public int Count => _cache.Count;
 
     public async Task<IReadOnlyList<DataTypeSetting>> FindAllAsync(CancellationToken cancellationToken = default)
     {
         if (!_options.UseCache)
         {
-            return (await LoadAllFromRedisAsync()).Values.ToList();
+            var map = await LoadAllFromRedisAsync();
+            return map is null ? Array.Empty<DataTypeSetting>() : map.Values.ToList();
         }
 
-        await EnsureFreshAsync(cancellationToken);
         return _cache.Values.ToList();
     }
 
@@ -70,40 +78,53 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
             return await FetchOneFromRedisAsync(dataTypeId);
         }
 
-        await EnsureFreshAsync(cancellationToken);
+        // Cached path: snapshot only, never touches Redis (the refresh service owns reloads).
         return _cache.TryGetValue(dataTypeId, out var found) ? found : null;
     }
 
-    private bool IsStale()
+    /// <summary>
+    /// Loads the snapshot for the first time. Throws if the load fails so the host fails to start
+    /// (k8s then restarts the pod) — we must never serve traffic having never loaded settings.
+    /// </summary>
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        var last = Volatile.Read(ref _lastLoadedTicks);
-        return last == long.MinValue || Environment.TickCount64 - last >= _ttlMs;
+        var ok = await RefreshAsync(cancellationToken);
+        if (!ok)
+        {
+            throw new InvalidOperationException(
+                "Initial load of data-type settings from Redis failed; refusing to start. " +
+                "Check Redis connectivity at " + string.Join(",", _redis.GetEndPoints().Select(e => e.ToString())) + ".");
+        }
     }
 
-    private async Task EnsureFreshAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Reloads the snapshot from Redis. On success swaps the snapshot and records success. On failure
+    /// keeps the previous snapshot, logs a warning and increments the failure metric. Never throws.
+    /// Returns true on success.
+    /// </summary>
+    public async Task<bool> RefreshAsync(CancellationToken cancellationToken = default)
     {
-        if (!IsStale())
-        {
-            return;
-        }
-
         await _reloadLock.WaitAsync(cancellationToken);
         try
         {
-            // Another caller may have reloaded while we waited for the lock.
-            if (!IsStale())
-            {
-                return;
-            }
-
             var map = await LoadAllFromRedisAsync();
-            if (map is not null)
+            if (map is null)
             {
-                _cache = map;
+                ProcessorMetrics.RecordSettingsLoadFailure();
+                _logger.LogWarning(
+                    "Data-type settings load from Redis failed; keeping {State} snapshot of {Count} entries",
+                    _loaded ? "previous" : "empty", _cache.Count);
+                return false;
             }
 
-            // Stamp the attempt (success or failure) so a failing Redis is retried at most once per TTL.
-            Volatile.Write(ref _lastLoadedTicks, Environment.TickCount64);
+            _cache = map;
+            _loaded = true;
+            LastSuccessfulLoadUtc = DateTimeOffset.UtcNow;
+            ProcessorMetrics.RecordSettingsLoadSuccess(map.Count);
+            _logger.LogInformation(
+                "Data-type settings loaded: {Count} entries ({ActiveCount} active)",
+                map.Count, map.Values.Count(s => s.IsActive));
+            return true;
         }
         finally
         {
@@ -130,7 +151,7 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
         {
             stopwatch.Stop();
             ProcessorMetrics.RecordRedisOperation("load_all", "error", stopwatch.Elapsed.TotalMilliseconds);
-            _logger.LogError(ex, "Failed to load data-type settings; keeping previous snapshot of {Count} entries", _cache.Count);
+            _logger.LogError(ex, "Redis error while loading data-type settings");
             return null;
         }
 
