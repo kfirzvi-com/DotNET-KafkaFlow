@@ -4,8 +4,11 @@ public class DataTypeSettingsOptions
 {
     public const string SectionName = "DataTypeSettings";
 
-    /// <summary>Redis hash key holding the settings (field = data type id, value = JSON of the setting).</summary>
-    public string HashKey { get; set; } = "datatype:settings";
+    /// <summary>
+    /// Key prefix for the per-data-type settings. Each setting is stored under its own Redis String
+    /// key <c>{KeyPrefix}{dataTypeId}</c> holding the JSON of a <see cref="DataTypeSetting"/>.
+    /// </summary>
+    public string KeyPrefix { get; set; } = "datatypesettings:";
 
     /// <summary>
     /// When true (default), reads are served from an in-memory cache refreshed on a TTL. When false,
