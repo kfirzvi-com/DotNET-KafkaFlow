@@ -148,6 +148,95 @@
         { "refId": "A", "legendFormat": "gc {{gc_heap_generation}}", "expr": "sum by (gc_heap_generation) (rate(dotnet_gc_collections_total[1m]))", "datasource": { "type": "prometheus", "uid": "prometheus" } },
         { "refId": "B", "legendFormat": "cpu seconds/s", "expr": "rate(dotnet_process_cpu_time_seconds_total[1m])", "datasource": { "type": "prometheus", "uid": "prometheus" } }
       ]
+    },
+    {
+      "type": "row", "title": "Kafka consumer (librdkafka statistics)", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer lag (messages)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 37 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15 }, "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "lag", "expr": "kafka_consumer_lag", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Assignment & rebalances",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 37 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "calcs": ["lastNotNull"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "assigned partitions", "expr": "kafka_consumer_assignment_partitions", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "B", "legendFormat": "rebalances (total)", "expr": "kafka_consumer_rebalances_total", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Broker RTT (ms)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 37 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "ms" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "calcs": ["mean", "max"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "avg", "expr": "kafka_broker_rtt_avg_milliseconds", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "B", "legendFormat": "max", "expr": "kafka_broker_rtt_max_milliseconds", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Consumer rx rate (msg/s) & fetch queue",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "calcs": ["mean", "lastNotNull"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "rx msg/s", "expr": "rate(kafka_consumer_rx_messages_total[1m])", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "B", "legendFormat": "fetch queue depth", "expr": "kafka_consumer_fetchq_messages", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "row", "title": "Settings & Redis health", "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 }
+    },
+    {
+      "type": "stat",
+      "title": "Settings snapshot size",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 54 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "green" }, "unit": "short" }, "overrides": [] },
+      "options": { "colorMode": "value", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "refId": "A", "expr": "datatype_settings_snapshot_size", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Seconds since last successful load",
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 54 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "since load", "expr": "datatype_settings_since_load_seconds", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Settings reloads vs load failures (rate/s)",
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 54 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 15 }, "unit": "ops" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "calcs": ["lastNotNull"], "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "legendFormat": "reloads", "expr": "rate(datatype_settings_reloads_total[5m])", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "refId": "B", "legendFormat": "load failures", "expr": "rate(datatype_settings_load_failures_total[5m])", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ]
     }
   ]
 }

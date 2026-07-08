@@ -1,4 +1,4 @@
-using Processor.Messages;
+using Processor.Domain.Messages;
 
 namespace Processor.Tests.Helpers;
 

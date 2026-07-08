@@ -1,11 +1,12 @@
 using Xunit;
 using Moq;
 using KafkaFlow;
-using Processor.Builders.Core;
-using Processor.Builders.FieldBuilders;
-using Processor.Handlers;
-using Processor.Messages;
-using Processor.Settings;
+using Processor.Domain.Building;
+using Processor.Domain.Building.FieldBuilders;
+using Processor.Application;
+using Processor.Domain.Messages;
+using Processor.Domain.DataTypes;
+using Processor.Infrastructure.DataTypes;
 using Processor.Tests.Helpers;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;

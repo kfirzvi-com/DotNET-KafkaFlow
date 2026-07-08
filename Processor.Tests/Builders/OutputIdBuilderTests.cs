@@ -1,6 +1,6 @@
-using Processor.Builders.Core;
-using Processor.Builders.FieldBuilders;
-using Processor.Messages;
+using Processor.Domain.Building;
+using Processor.Domain.Building.FieldBuilders;
+using Processor.Domain.Messages;
 using Xunit;
 
 namespace Processor.Tests.Builders;
