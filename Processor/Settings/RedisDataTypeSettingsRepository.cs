@@ -21,20 +21,22 @@ namespace Processor.Settings;
 /// <item>uncached: every lookup issues a Redis GET — used only for the cache-vs-lookup experiment.</item>
 /// </list>
 /// </summary>
-public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
+public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository, IDataTypeSettingsCache
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly IConnectionMultiplexer _redis;
     private readonly DataTypeSettingsOptions _options;
     private readonly ILogger<RedisDataTypeSettingsRepository> _logger;
-    private readonly SemaphoreSlim _reloadLock = new(1, 1);
 
     // Volatile reference swap gives lock-free reads; a reader always sees a fully-built snapshot.
+    // No lock is needed on writes: RefreshAsync is only ever called by the single background
+    // refresh service, serially (initial load completes before the periodic loop starts).
     private volatile IReadOnlyDictionary<string, DataTypeSetting> _cache =
         new Dictionary<string, DataTypeSetting>(StringComparer.OrdinalIgnoreCase);
 
     private volatile bool _loaded;
+    private long _lastLoadTicksUtc; // 0 = never; read off-thread by the health check
 
     public RedisDataTypeSettingsRepository(
         IConnectionMultiplexer redis,
@@ -50,7 +52,14 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
     public bool IsLoaded => _loaded;
 
     /// <summary>UTC time of the last successful load (for health reporting), or null if never.</summary>
-    public DateTimeOffset? LastSuccessfulLoadUtc { get; private set; }
+    public DateTimeOffset? LastSuccessfulLoadUtc
+    {
+        get
+        {
+            var ticks = Interlocked.Read(ref _lastLoadTicksUtc);
+            return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+        }
+    }
 
     /// <summary>Number of settings currently in the snapshot.</summary>
     public int Count => _cache.Count;
@@ -104,32 +113,24 @@ public class RedisDataTypeSettingsRepository : IDataTypeSettingsRepository
     /// </summary>
     public async Task<bool> RefreshAsync(CancellationToken cancellationToken = default)
     {
-        await _reloadLock.WaitAsync(cancellationToken);
-        try
+        var map = await LoadAllFromRedisAsync();
+        if (map is null)
         {
-            var map = await LoadAllFromRedisAsync();
-            if (map is null)
-            {
-                ProcessorMetrics.RecordSettingsLoadFailure();
-                _logger.LogWarning(
-                    "Data-type settings load from Redis failed; keeping {State} snapshot of {Count} entries",
-                    _loaded ? "previous" : "empty", _cache.Count);
-                return false;
-            }
+            ProcessorMetrics.RecordSettingsLoadFailure();
+            _logger.LogWarning(
+                "Data-type settings load from Redis failed; keeping {State} snapshot of {Count} entries",
+                _loaded ? "previous" : "empty", _cache.Count);
+            return false;
+        }
 
-            _cache = map;
-            _loaded = true;
-            LastSuccessfulLoadUtc = DateTimeOffset.UtcNow;
-            ProcessorMetrics.RecordSettingsLoadSuccess(map.Count);
-            _logger.LogInformation(
-                "Data-type settings loaded: {Count} entries ({ActiveCount} active)",
-                map.Count, map.Values.Count(s => s.IsActive));
-            return true;
-        }
-        finally
-        {
-            _reloadLock.Release();
-        }
+        _cache = map;
+        _loaded = true;
+        Interlocked.Exchange(ref _lastLoadTicksUtc, DateTime.UtcNow.Ticks);
+        ProcessorMetrics.RecordSettingsLoadSuccess(map.Count);
+        _logger.LogInformation(
+            "Data-type settings loaded: {Count} entries ({ActiveCount} active)",
+            map.Count, map.Values.Count(s => s.IsActive));
+        return true;
     }
 
     /// <summary>SCAN the key prefix and MGET all settings. Returns null on Redis failure (never throws).</summary>

@@ -11,13 +11,13 @@ namespace Processor.Health;
 /// </summary>
 public class SettingsHealthCheck : IHealthCheck
 {
-    private readonly RedisDataTypeSettingsRepository _repository;
+    private readonly IDataTypeSettingsCache _cache;
     private readonly DataTypeSettingsOptions _options;
 
     public SettingsHealthCheck(
-        RedisDataTypeSettingsRepository repository, IOptions<DataTypeSettingsOptions> options)
+        IDataTypeSettingsCache cache, IOptions<DataTypeSettingsOptions> options)
     {
-        _repository = repository;
+        _cache = cache;
         _options = options.Value;
     }
 
@@ -29,21 +29,21 @@ public class SettingsHealthCheck : IHealthCheck
             return Task.FromResult(HealthCheckResult.Healthy("Uncached mode: settings read from Redis per request"));
         }
 
-        if (!_repository.IsLoaded || _repository.LastSuccessfulLoadUtc is null)
+        if (!_cache.IsLoaded || _cache.LastSuccessfulLoadUtc is null)
         {
             return Task.FromResult(HealthCheckResult.Unhealthy("Data-type settings have never been loaded"));
         }
 
-        var age = DateTimeOffset.UtcNow - _repository.LastSuccessfulLoadUtc.Value;
+        var age = DateTimeOffset.UtcNow - _cache.LastSuccessfulLoadUtc.Value;
         var stalenessThreshold = TimeSpan.FromSeconds(Math.Max(1, _options.RefreshSeconds) * 3);
 
         if (age > stalenessThreshold)
         {
             return Task.FromResult(HealthCheckResult.Degraded(
-                $"Serving a stale snapshot: last successful load {age.TotalSeconds:F0}s ago ({_repository.Count} entries)"));
+                $"Serving a stale snapshot: last successful load {age.TotalSeconds:F0}s ago ({_cache.Count} entries)"));
         }
 
         return Task.FromResult(HealthCheckResult.Healthy(
-            $"{_repository.Count} settings, loaded {age.TotalSeconds:F0}s ago"));
+            $"{_cache.Count} settings, loaded {age.TotalSeconds:F0}s ago"));
     }
 }

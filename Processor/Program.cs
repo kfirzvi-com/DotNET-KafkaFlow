@@ -56,7 +56,10 @@ services.AddSingleton<IConnectionMultiplexer>(_ =>
     return ConnectionMultiplexer.Connect(config);
 });
 services.AddSingleton<RedisDataTypeSettingsRepository>();
+// Domain repository (FindBy/FindAll) and infra cache lifecycle (Init/Refresh) are separate
+// interfaces over the same singleton, so domain consumers never see the cache methods.
 services.AddSingleton<IDataTypeSettingsRepository>(sp => sp.GetRequiredService<RedisDataTypeSettingsRepository>());
+services.AddSingleton<IDataTypeSettingsCache>(sp => sp.GetRequiredService<RedisDataTypeSettingsRepository>());
 
 // Kafka statistics -> metrics bridge (updated by the consumer statistics handler below).
 services.AddSingleton(kafkaStats);

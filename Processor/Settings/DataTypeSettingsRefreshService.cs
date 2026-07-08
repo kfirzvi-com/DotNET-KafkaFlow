@@ -19,18 +19,18 @@ namespace Processor.Settings;
 /// </summary>
 public class DataTypeSettingsRefreshService : BackgroundService
 {
-    private readonly RedisDataTypeSettingsRepository _repository;
+    private readonly IDataTypeSettingsCache _cache;
     private readonly IConnectionMultiplexer _redis;
     private readonly DataTypeSettingsOptions _options;
     private readonly ILogger<DataTypeSettingsRefreshService> _logger;
 
     public DataTypeSettingsRefreshService(
-        RedisDataTypeSettingsRepository repository,
+        IDataTypeSettingsCache cache,
         IConnectionMultiplexer redis,
         IOptions<DataTypeSettingsOptions> options,
         ILogger<DataTypeSettingsRefreshService> logger)
     {
-        _repository = repository;
+        _cache = cache;
         _redis = redis;
         _options = options.Value;
         _logger = logger;
@@ -41,7 +41,7 @@ public class DataTypeSettingsRefreshService : BackgroundService
         if (_options.UseCache)
         {
             // Throws if Redis is down / the load fails -> host fails to start -> pod restarts.
-            await _repository.InitializeAsync(cancellationToken);
+            await _cache.InitializeAsync(cancellationToken);
         }
         else
         {
@@ -66,7 +66,7 @@ public class DataTypeSettingsRefreshService : BackgroundService
         {
             while (await timer.WaitForNextTickAsync(stoppingToken))
             {
-                await _repository.RefreshAsync(stoppingToken);
+                await _cache.RefreshAsync(stoppingToken);
             }
         }
         catch (OperationCanceledException)
