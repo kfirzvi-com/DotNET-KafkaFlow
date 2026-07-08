@@ -52,6 +52,7 @@ public class MessageHandlerTests
             mockDeadLetterProducer.Object,
             outputMessageBuilder,
             options,
+            Options.Create(new BenchmarkOptions()),
             mockLogger.Object);
 
         // Setup the mock to return a DeliveryResult

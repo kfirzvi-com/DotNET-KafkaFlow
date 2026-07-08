@@ -1,0 +1,5 @@
+# generated load files + intermediate results
+**/.work/
+# python bytecode
+__pycache__/
+*.pyc

@@ -1,5 +1,6 @@
 using KafkaFlow;
 using KafkaFlow.Configuration;
+using KafkaFlow.Consumers.DistributionStrategies;
 using KafkaFlow.OpenTelemetry;
 using KafkaFlow.Serializer;
 using OpenTelemetry.Metrics;
@@ -25,11 +26,17 @@ var environment = configuration["OpenTelemetry:Environment"] ?? "development";
 var site = configuration["OpenTelemetry:Site"] ?? "local";
 var metricsPort = configuration.GetValue<int?>("Metrics:Port") ?? 8080;
 var redisConnectionString = configuration["Redis:ConnectionString"] ?? "localhost:6379";
+var inputTopic = configuration["Kafka:InputTopic"] ?? "input-topic";
+var workersCount = configuration.GetValue<int?>("Kafka:WorkersCount") ?? 10;
+var bufferSize = configuration.GetValue<int?>("Kafka:BufferSize") ?? 100;
 
 // Expose the /metrics scraping endpoint (and nothing else) on a dedicated port.
 builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(metricsPort));
 
 var services = builder.Services;
+
+// Benchmark knob: synthetic per-message CPU work for worker/buffer tuning.
+services.Configure<BenchmarkOptions>(configuration.GetSection(BenchmarkOptions.SectionName));
 
 // Data-type settings: Redis-backed repository with an in-memory TTL cache.
 services.Configure<DataTypeSettingsOptions>(configuration.GetSection(DataTypeSettingsOptions.SectionName));
@@ -83,10 +90,13 @@ services.AddKafkaFlowHostedService(kafka => kafka
     .AddCluster(cluster => cluster
         .WithBrokers(brokers)
         .AddConsumer(consumer => consumer
-            .Topic("input-topic")
+            .Topic(inputTopic)
             .WithGroupId("message-processor-group")
-            .WithBufferSize(100)
-            .WithWorkersCount(10)
+            .WithBufferSize(bufferSize)
+            .WithWorkersCount(workersCount)
+            // Keyless workload: FreeWorker distributes each message to any free worker
+            // (the default BytesSum would pin all null-key messages to worker 0).
+            .WithWorkerDistributionStrategy<FreeWorkerDistributionStrategy>()
             .AddMiddlewares(middlewares => middlewares
                 .AddSingleTypeDeserializer<InputMessage, JsonCoreDeserializer>()
                 .AddTypedHandlers(handlers => handlers

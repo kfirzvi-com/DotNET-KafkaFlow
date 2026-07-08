@@ -242,20 +242,23 @@ the pipeline.
 - **Repository pattern**: `IDataTypeSettingsRepository` exposes `FindAllAsync` / `FindByIdAsync`.
   The Redis implementation (`RedisDataTypeSettingsRepository`) serves reads from an in-memory cache
   and reloads from Redis only after a TTL (`DataTypeSettings:RefreshSeconds`, default 15s) has
-  passed, so the hot path never hits Redis per message.
+  passed, so the hot path never hits Redis per message. Uncached (`UseCache: false`) issues a `GET`
+  per lookup instead.
 - **Filter location**: the check runs at the start of `OutputMessageBuilder.Build(...)`.
 
 ### Redis storage
 
-Settings live in a Redis hash (`DataTypeSettings:HashKey`, default `datatype:settings`) where each
-field is a data type id and each value is either a JSON object or a bare boolean:
+Each setting is stored under its **own Redis String key** `{DataTypeSettings:KeyPrefix}{dataTypeId}`
+(prefix default `datatypesettings:`) holding a JSON object (a bare boolean is also accepted):
 
 ```bash
-# JSON form
-redis-cli HSET datatype:settings news '{"dataTypeId":"news","isActive":false}'
-# bare-boolean convenience form
-redis-cli HSET datatype:settings weather true
+# one key per data type
+redis-cli SET datatypesettings:news '{"dataTypeId":"news","isActive":false}'
+redis-cli SET datatypesettings:weather '{"dataTypeId":"weather","isActive":true}'
 ```
+
+The cache reload enumerates keys with `SCAN datatypesettings:*` and fetches them with `MGET`; an
+uncached lookup is a single `GET datatypesettings:{id}`.
 
 ### Producing records with a data type id
 
@@ -292,6 +295,27 @@ Grafana dashboard. A load-test comparison of the two modes is in `REDIS_CACHE_LO
 
 ---
 
+## Consumer Worker Tuning
+
+The consumer's parallelism is configurable:
+
+| Setting | Meaning |
+|---------|---------|
+| `Kafka:WorkersCount` | Number of worker loops (threads/tasks) processing messages in parallel. Workers are **not** partition consumers — one Kafka consumer fetches and the distribution strategy routes each message to a worker. |
+| `Kafka:BufferSize` | Per-worker bounded prefetch channel. Total in-flight ≈ `WorkersCount × BufferSize`. |
+| `Benchmark:WorkMicros` | Synthetic CPU work per message (µs) for load testing; `0` = disabled (no effect on normal runs). |
+
+The consumer uses **`FreeWorkerDistributionStrategy`** because this system is **keyless**. With the
+default `BytesSum` strategy, null-key messages all hash to worker 0 — i.e. single-threaded regardless
+of `WorkersCount`. `FreeWorker` routes each message to any free worker (no per-key ordering).
+
+A load-test sweep (`WORKERS_BUFFER_TUNING.pdf`) found: throughput scales with workers up to ≈ the
+host core count, then flattens while per-message latency rises (CPU oversubscription); buffer size has
+negligible effect on a keyless/CPU-bound workload. **Rule of thumb: set `WorkersCount` ≈ the pod's CPU
+allotment, keep `BufferSize` ~100.**
+
+---
+
 ## Observability (OpenTelemetry + Prometheus + Grafana)
 
 The processor is an ASP.NET Core host that runs the KafkaFlow consumer/producers **and** exposes an
@@ -311,7 +335,7 @@ Exported metrics include:
 | `messages_dropped_total` | counter | Messages dropped (empty content) |
 | `messages_filtered_total{reason}` | counter | Messages filtered by data-type settings (`inactive_data_type` / `unknown_data_type` / `missing_data_type_id`) |
 | `messages_processing_duration_milliseconds` | histogram | Per-message handling latency (p50/p95/p99) |
-| `redis_operations_total{operation,status}` | counter | Redis round-trips (`hash_get` / `hash_get_all`, `ok` / `error`) |
+| `redis_operations_total{operation,status}` | counter | Redis round-trips (`get` / `load_all`, `ok` / `error`) |
 | `redis_operation_duration_milliseconds` | histogram | Redis round-trip latency |
 | `dotnet_*` | various | .NET runtime instrumentation (GC, memory, CPU, threads) |
 | KafkaFlow instrumentation | various | Consumer/producer activity |
