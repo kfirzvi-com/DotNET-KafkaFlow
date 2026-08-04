@@ -1,677 +1,448 @@
-# Dotnet.KafkaFlow - Message Processor
+# Dotnet.KafkaFlow — multi-domain message processor
 
-A sophisticated Kafka message processing application built with .NET 9.0 using the **KafkaFlow** library. This project demonstrates advanced architectural patterns for message handling, including the Builder Pattern for separating business logic concerns and comprehensive data-driven testing.
+A Kafka consumer/producer built on **KafkaFlow** (.NET 9) that processes **multiple domains from one
+codebase**. Everything a domain shares — message envelope, field builders, data-type filtering, the
+consumer handler, metrics, health — lives in `Processor.Core` and is parameterized by the domain's
+payload type. A domain contributes a payload class, a message class, one builder, and a module.
+
+The same image is deployed **once per domain**; only `Processor:Domain` differs between deployments.
 
 ## Table of Contents
 
-- [Project Overview](#project-overview)
-- [Architecture](#architecture)
-  - [Project Structure](#project-structure)
-  - [Builder Pattern](#builder-pattern)
-  - [Message Flow](#message-flow)
-- [KafkaFlow Integration](#kafkaflow-integration)
-- [Building & Testing](#building--testing)
-  - [Unit Testing Strategy](#unit-testing-strategy)
-  - [Data-Driven Tests](#data-driven-tests)
-  - [VS Code Test Explorer](#vs-code-test-explorer)
+- [Layout](#layout)
+- [Multi-domain design](#multi-domain-design)
+  - [The generic message envelope](#the-generic-message-envelope)
+  - [Shared vs. domain-specific builders](#shared-vs-domain-specific-builders)
+  - [Domain modules and DI](#domain-modules-and-di)
+  - [Adding a domain](#adding-a-domain)
+- [Message flow](#message-flow)
+- [Data-type filtering (Oracle)](#data-type-filtering-oracle)
+- [Configuration](#configuration)
+- [Consumer worker tuning](#consumer-worker-tuning)
+- [Health & resilience](#health--resilience)
+- [Observability](#observability)
+- [Running locally](#running-locally)
+- [Testing](#testing)
 
 ---
 
-## Project Overview
-
-**Dotnet.KafkaFlow** is a Kafka consumer/producer application that processes input messages and routes them to different output queues based on validation and business logic:
-
-- **Input Topic**: `input-topic` - Receives `InputMessage` objects
-- **Output Topic**: `output-topic` - Valid messages sent here as `OutputMessage`
-- **Dead Letter Topic**: `dead-letter-topic` - Messages that fail validation
-- **Dropped Messages**: Logged but not sent anywhere (no persistence)
-
-Each field in the output message is computed independently by its own builder class, allowing for:
-- ✅ Isolated unit testing
-- ✅ Clear separation of concerns
-- ✅ Easy extension and modification
-- ✅ Flexible validation and routing decisions
-
----
-
-## Architecture
-
-### Project Structure
+## Layout
 
 ```
 Dotnet.KafkaFlow/
-├── Processor/                           # Main application
-│   ├── Program.cs                       # KafkaFlow configuration & DI setup
-│   ├── Handlers/
-│   │   └── MessageHandler.cs            # Consumes messages, orchestrates builders
-│   ├── Builders/
-│   │   ├── Core/                        # Core builder infrastructure
-│   │   │   ├── BuildStatus.cs           # Enum: Ok, DeadLetter, Drop
-│   │   │   ├── FieldBuildResult.cs      # Generic result wrapper for field builders
-│   │   │   ├── BuildOutcome.cs          # Final message outcome
-│   │   │   ├── IOutputFieldBuilder.cs   # Interface for field builders
-│   │   │   ├── IOutputMessageBuilder.cs # Interface for message coordinator
-│   │   │   └── OutputMessageBuilder.cs  # Orchestrates field builders
-│   │   └── FieldBuilders/               # Individual field implementations
-│   │       ├── OutputIdBuilder.cs       # Validates & formats message ID
-│   │       ├── ProcessedContentBuilder.cs # Transforms content, decides routing
-│   │       ├── ProcessedAtBuilder.cs    # Timestamps the message
-│   │       └── ProcessorNameBuilder.cs  # Adds processor metadata
-│   ├── Messages/
-│   │   ├── InputMessage.cs              # Message from Kafka topic
-│   │   ├── OutputMessage.cs             # Message to output topic
-│   │   └── DeadLetterMessage.cs         # Message for dead letter handling
-│   └── Properties/
-│       └── launchSettings.json
-├── Processor.Tests/                     # Comprehensive test suite
-│   ├── MessageHandlerTests.cs           # Integration tests with outcomes
-│   ├── Builders/
-│   │   ├── OutputIdBuilderTests.cs      # Unit tests for ID validation
-│   │   └── ProcessedContentBuilderTests.cs # Unit tests for content processing
-│   ├── Helpers/
-│   │   └── TestDataLoader.cs            # Loads test cases from JSON files
-│   └── TestsData/                       # JSON test case definitions
-│       ├── test_case_1.json             # Output outcome test
-│       ├── test_case_2.json             # Output outcome test
-│       ├── test_case_3.json             # Output outcome test
-│       ├── test_case_4.json             # Output outcome test
-│       ├── test_case_5.json             # Output outcome test
-│       ├── test_case_deadletter.json    # DeadLetter outcome test
-│       └── test_case_dropped.json       # Drop outcome test
-├── Dotnet.KafkaFlow.sln
-└── .gitignore
+├── src/
+│   ├── Processor.Core/                  # everything shared between domains
+│   │   ├── Messages/                    # IInputMessage, InputMessage<T>, OutputMessage<T>, DeadLetterMessage<T>
+│   │   ├── Building/                    # BuildStatus/Outcome, field builders, OutputMessageBuilder<TInput,TData>
+│   │   ├── Application/                 # MessageHandler<TInput,TData>, options
+│   │   ├── DataTypes/                   # Oracle + in-memory stores, caching repository, refresh service
+│   │   ├── Domains/                     # IDomainModule, DomainModule<TInput,TData>, DomainModuleSelector
+│   │   ├── Diagnostics/                 # metrics, Kafka statistics bridge, log handler
+│   │   └── Health/                       # data store + settings readiness checks
+│   ├── Processor.Domains.Posts/         # domain A: social-network posts
+│   ├── Processor.Domains.Profiles/      # domain B: social-network profiles
+│   └── Processor.Host/                  # the deployable: composition, endpoints, appsettings.json
+└── tests/
+    ├── TestData/                        # JSON test cases, one sub-directory per domain
+    │   ├── Posts/
+    │   └── Profiles/
+    ├── Shared/                          # test-case model + loader shared by both e2e suites
+    ├── Processor.Core.Tests/            # unit tests for the shared pipeline (synthetic domain)
+    ├── Processor.Domains.Posts.Tests/   # unit tests for the posts rules
+    ├── Processor.Domains.Profiles.Tests/# unit tests for the profiles rules
+    ├── Processor.Host.Tests/            # host composition: domain selection, DI graph, options
+    ├── Processor.MockTests/             # e2e through the real DI graph, mocked Kafka + in-memory store
+    └── Processor.HostE2ETests/          # e2e through the real host, real Kafka + real Oracle
 ```
 
-### Builder Pattern
-
-The **Builder Pattern** is used to compute each field of `OutputMessage` independently:
-
-#### Core Concepts
-
-1. **BuildStatus Enum** - Determines message routing:
-   ```csharp
-   public enum BuildStatus
-   {
-       Ok,           // Message is valid, send to output
-       DeadLetter,   // Validation failed, send to DLQ
-       Drop          // Message should be silently dropped (logged only)
-   }
-   ```
-
-2. **FieldBuildResult<T>** - Generic wrapper for field computation:
-   ```csharp
-   public class FieldBuildResult<T>
-   {
-       public BuildStatus Status { get; }  // Ok/DeadLetter/Drop
-       public T? Value { get; }            // Computed field value
-       public string? Reason { get; }      // Why it failed (if applicable)
-   }
-   ```
-
-3. **OutputMessageBuilder** - Orchestrates field builders:
-   - Calls each field builder in sequence
-   - Short-circuits on `DeadLetter` or `Drop` status
-   - Aggregates results into final `BuildOutcome`
-
-#### Field Builders
-
-Each builder implements `IOutputFieldBuilder<T>` and independently decides the message outcome:
-
-| Builder | Responsibility | Ok Condition | DeadLetter | Drop |
-|---------|---|---|---|---|
-| **OutputIdBuilder** | Validate message ID | Non-empty ID | Missing ID | — |
-| **ProcessedContentBuilder** | Transform content | Non-empty content | — | Empty content |
-| **ProcessedAtBuilder** | Add timestamp | Always succeeds | — | — |
-| **ProcessorNameBuilder** | Add processor metadata | Always succeeds | — | — |
-
-Example: If `OutputIdBuilder` returns `DeadLetter("Missing message id")`, the entire message is sent to the dead-letter queue with that reason.
-
-### Message Flow
-
-```
-Input Message
-       ↓
-[MessageHandler consumes from input-topic]
-       ↓
-[OutputMessageBuilder.Build(input)]
-       ├─→ OutputIdBuilder.Build(input)
-       │   ├─→ DeadLetter? ──→ Send to dead-letter-topic
-       │   └─→ Ok? Continue ↓
-       ├─→ ProcessedContentBuilder.Build(input)
-       │   ├─→ Drop? ──→ Log & discard (no persistence)
-       │   ├─→ DeadLetter? ──→ Send to dead-letter-topic
-       │   └─→ Ok? Continue ↓
-       ├─→ ProcessedAtBuilder.Build(input)
-       │   └─→ Ok? Continue ↓
-       ├─→ ProcessorNameBuilder.Build(input)
-       │   └─→ Ok? Continue ↓
-       ↓
-[BuildOutcome with status & message/reason]
-       ├─→ Ok: Send OutputMessage to output-topic
-       ├─→ DeadLetter: Send DeadLetterMessage to dead-letter-topic
-       └─→ Drop: Log warning & discard
-```
+Both domains are chosen from the same business area (social networks) on purpose: they differ in
+*entity*, not in problem space, which is the case the generic base is for.
 
 ---
 
-## KafkaFlow Integration
+## Multi-domain design
 
-KafkaFlow is a .NET library that simplifies Kafka producer/consumer implementation:
+### The generic message envelope
 
-### Configuration (Program.cs)
+`InputMessage<TDomainData>` holds the fields every domain shares. A domain inherits it and closes the
+type parameter, which is what gives that domain's message its own strongly-typed payload field:
 
 ```csharp
-services.AddKafka(kafka => kafka
-    .AddCluster(cluster => cluster
-        .WithBrokers(new[] { "localhost:9092" })
-        
-        // Consumer: Reads from input-topic
-        .AddConsumer(consumer => consumer
-            .Topic("input-topic")
-            .WithGroupId("message-processor-group")
-            .WithBufferSize(100)
-            .WithWorkersCount(10)
-            .AddMiddlewares(middlewares => middlewares
-                .AddDeserializer<JsonCoreDeserializer>()
-                .AddTypedHandlers(handlers => handlers
-                    .AddHandler<MessageHandler>()
-                )
-            )
-        )
-        
-        // Producer: Sends to output-topic
-        .AddProducer<OutputMessage>(producer => producer
-            .DefaultTopic("output-topic")
-            .AddMiddlewares(middlewares => middlewares
-                .AddSerializer<JsonCoreSerializer>()
-            )
-        )
-        
-        // Dead Letter Producer: Sends to dead-letter-topic
-        .AddProducer<DeadLetterMessage>(producer => producer
-            .DefaultTopic("dead-letter-topic")
-            .AddMiddlewares(middlewares => middlewares
-                .AddSerializer<JsonCoreSerializer>()
-            )
-        )
-    )
-);
+public abstract class InputMessage<TDomainData> : IInputMessage
+    where TDomainData : class, IDomainData, new()
+{
+    public string Id { get; set; }
+    public string Content { get; set; }
+    public DateTime Timestamp { get; set; }
+    public TDomainData DomainData { get; set; } = new();   // ← the domain-specific field
+}
+
+public sealed class PostInputMessage    : InputMessage<PostData>    { }
+public sealed class ProfileInputMessage : InputMessage<ProfileData> { }
 ```
 
-### Message Handler
+`OutputMessage<TDomainData>` and `DeadLetterMessage<TDomainData>` are parameterized the same way, so a
+dead-lettered message keeps its domain payload intact for replay instead of being flattened.
 
-The `MessageHandler` consumes `InputMessage` objects and uses builders to process them:
+`IInputMessage` is the non-generic view of the shared fields. It exists so Core's shared field builders
+can be written once against it — see below.
+
+### Shared vs. domain-specific builders
+
+`IOutputFieldBuilder<in TInput, TValue>` is **contravariant** in `TInput`. That is what lets a single
+shared builder satisfy every domain's dependency without per-domain copies:
 
 ```csharp
-public class MessageHandler : IMessageHandler<InputMessage>
+// One implementation, declared against the interface…
+public class OutputIdBuilder : IOutputFieldBuilder<IInputMessage, string> { … }
+
+// …and it satisfies IOutputFieldBuilder<PostInputMessage, string> too.
+```
+
+| Builder | Scope | Ok | DeadLetter | Drop |
+|---|---|---|---|---|
+| `OutputIdBuilder` | shared | non-empty id | missing id | — |
+| `ProcessedContentBuilder` | shared | non-empty content | — | empty content |
+| `ProcessedAtBuilder` | shared | always | — | — |
+| `ProcessorNameBuilder` | shared | always | — | — |
+| `PostDataBuilder` | posts | valid post payload | no author / no network / negative counters | — |
+| `ProfileDataBuilder` | profiles | valid profile payload | no handle / no network / negative counters | no followers |
+
+A domain supplies exactly one builder, an `IDomainDataBuilder<TInput, TDomainData>`.
+`OutputMessageBuilder<TInput, TDomainData>` orchestrates the shared builders and then the domain one,
+honouring its dead-letter/drop decisions identically. Domain processing runs **last**, so a message the
+shared rules would reject never pays for it.
+
+Note the two domains make *different* routing choices for a similar situation — posts dead-letter a
+malformed payload, profiles *drop* a follower-less account — and the same Core orchestration handles
+both.
+
+### Domain modules and DI
+
+KafkaFlow's registration API needs closed generic types
+(`AddSingleTypeDeserializer<PostInputMessage, …>`) that the host cannot name without knowing the
+domain. `DomainModule<TInput, TDomainData>` closes them from inside the domain project, so a domain
+module is all a domain has to expose:
+
+```csharp
+public sealed class PostsDomainModule : DomainModule<PostInputMessage, PostData>
 {
-    public async Task Handle(IMessageContext context, InputMessage message)
-    {
-        var outcome = _outputMessageBuilder.Build(message);
-        
-        switch (outcome.Status)
-        {
-            case BuildStatus.Ok:
-                await _producer.ProduceAsync(message.Id, outcome.Message!);
-                break;
-            case BuildStatus.DeadLetter:
-                await _deadLetterProducer.ProduceAsync(message.Id, dlqMessage);
-                break;
-            case BuildStatus.Drop:
-                _logger.LogWarning("Message dropped: {Reason}", outcome.Reason);
-                break;
-        }
-    }
+    public override string Name => PostData.Domain;   // "posts"
+
+    protected override void RegisterDomainServices(IServiceCollection services) =>
+        services.AddSingleton<IDomainDataBuilder<PostInputMessage, PostData>, PostDataBuilder>();
 }
 ```
 
----
+The host compiles in **every** module and activates exactly **one**, chosen by configuration:
 
-## Data-Type Filtering (Redis)
-
-Records are filtered by **data type** before any processing. Each data type has a setting in Redis
-with a `dataTypeId` and an `isActive` flag; only records whose data type is active continue through
-the pipeline.
-
-- **Data type id source**: the Kafka message **header** `data-type-id` (configurable), falling back
-  to the message **key**.
-- **Filter rule**: a record is *filtered* (dropped, logged, offset committed) when its data type is
-  inactive, unknown (no setting), or the id is missing. This is a distinct outcome from a content
-  `Drop`, and is counted separately via `messages_filtered_total{reason=...}` where `reason` is a
-  bounded category (`inactive_data_type`, `unknown_data_type`, `missing_data_type_id`).
-- **Repository pattern**: `IDataTypeSettingsRepository` exposes `FindAllAsync` / `FindByIdAsync`.
-  The Redis implementation (`RedisDataTypeSettingsRepository`) serves reads from an in-memory cache
-  and reloads from Redis only after a TTL (`DataTypeSettings:RefreshSeconds`, default 15s) has
-  passed, so the hot path never hits Redis per message. Uncached (`UseCache: false`) issues a `GET`
-  per lookup instead.
-- **Filter location**: the check runs at the start of `OutputMessageBuilder.Build(...)`.
-
-### Redis storage
-
-Each setting is stored under its **own Redis String key** `{DataTypeSettings:KeyPrefix}{dataTypeId}`
-(prefix default `datatypesettings:`) holding a JSON object (a bare boolean is also accepted):
-
-```bash
-# one key per data type
-redis-cli SET datatypesettings:news '{"dataTypeId":"news","isActive":false}'
-redis-cli SET datatypesettings:weather '{"dataTypeId":"weather","isActive":true}'
+```csharp
+var module = DomainModuleSelector.Select(AvailableDomains(), configuration["Processor:Domain"]);
+module.RegisterServices(services);          // the only domain-specific registrations
 ```
 
-The cache reload enumerates keys with `SCAN datatypesettings:*` and fetches them with `MGET`; an
-uncached lookup is a single `GET datatypesettings:{id}`.
+An unknown or missing domain name **fails startup** with the list of valid names — a typo must never
+silently run the wrong processor against a deployment's topics. A posts deployment does not even have
+the profiles pipeline in its container.
 
-### Producing records with a data type id
+### Adding a domain
 
-```bash
-# key carries the data type id (key.separator avoids the ':' inside JSON)
-printf '%s\n' \
-  'weather|{"Id":"m1","Content":"sunny"}' \
-  'news|{"Id":"m2","Content":"headline"}' \
-  | docker exec -i broker kafka-console-producer --bootstrap-server broker:9092 \
-      --topic input-topic --property parse.key=true --property key.separator='|'
-```
+1. `PaymentData : IDomainData` — the payload, with a `DomainName`.
+2. `PaymentInputMessage : InputMessage<PaymentData>` — empty body; the base supplies everything.
+3. `PaymentDataBuilder : IDomainDataBuilder<PaymentInputMessage, PaymentData>` — the domain rules.
+4. `PaymentsDomainModule : DomainModule<PaymentInputMessage, PaymentData>` — name + register the builder.
+5. Add the module to `ProcessorHostExtensions.AvailableDomains()`, and the project reference.
+6. Add `tests/TestData/Payments/*.json` and a two-line theory in each e2e suite.
 
-Configuration (`appsettings.json`):
-
-```json
-"Redis": { "ConnectionString": "localhost:6379" },
-"DataTypeSettings": { "HashKey": "datatype:settings", "UseCache": true, "RefreshSeconds": 15, "HeaderName": "data-type-id" }
-```
-
-Run Redis with the rest of the stack: `docker compose up -d redis`.
-
-### Cache vs. per-lookup
-
-`UseCache` toggles how the Redis repository serves reads:
-
-- **`true`** (default) — reads come from an in-memory snapshot, reloaded via `HGETALL` only after the
-  TTL; the hot path never hits Redis per message.
-- **`false`** — every lookup issues a Redis `HGET`. Useful for measuring the cost of caching.
-
-Every Redis round-trip is timed via `redis_operations_total{operation,status}` and
-`redis_operation_duration_milliseconds`, so Redis latency/throughput bottlenecks are visible on the
-Grafana dashboard. A load-test comparison of the two modes is in `REDIS_CACHE_LOADTEST.pdf`
-(cached issued 3 Redis ops for 50k messages vs. 50,000 uncached).
+No change to Core, the handler, the orchestrating builder, metrics, or health.
 
 ---
 
-## Consumer Worker Tuning
+## Message flow
 
-The consumer's parallelism is configurable:
+```
+Input topic (one per domain deployment)
+       ↓
+[MessageHandler<TInput,TData> consumes]
+       ↓  data type id from header `data-type-id`, else the message key
+[OutputMessageBuilder<TInput,TData>.Build(input, dataTypeId)]
+       ├─→ data-type filter (Oracle-backed snapshot)
+       │     ├─→ missing / unknown / inactive ──→ Filtered: log + count, commit offset, produce nothing
+       │     └─→ active? continue ↓
+       ├─→ shared field builders (id, content, processedAt, processorName)
+       │     ├─→ DeadLetter? ──→ dead-letter topic
+       │     ├─→ Drop?       ──→ log + count only
+       │     └─→ Ok? continue ↓
+       ├─→ domain data builder (PostDataBuilder / ProfileDataBuilder)
+       │     ├─→ DeadLetter? ──→ dead-letter topic
+       │     ├─→ Drop?       ──→ log + count only
+       │     └─→ Ok? continue ↓
+       ↓
+[BuildOutcome<TData>]  ──→ Ok: OutputMessage<TData> to the output topic (keyed by message id)
+```
+
+`Filtered` and `Drop` are distinct outcomes: the first means "this data type is switched off", the
+second "this message has nothing to process". Both commit the offset and produce nothing; they are
+counted separately.
+
+---
+
+## Data-type filtering (Oracle)
+
+Records are filtered by **data type** before any processing. Each data type has a row with an active
+flag; only records whose data type is active continue.
+
+- **Data type id source**: the Kafka header `data-type-id` (configurable), falling back to the message key.
+- **Filter reasons** are bounded category codes, safe as a metric label:
+  `missing_data_type_id`, `unknown_data_type`, `inactive_data_type`.
+- **Rows are scoped by domain**, so one table serves every deployment and a profiles row can never
+  switch a posts processor on.
+
+### Schema
+
+```sql
+CREATE TABLE DATA_TYPE_SETTINGS (
+  DOMAIN_NAME  VARCHAR2(64)  NOT NULL,
+  DATA_TYPE_ID VARCHAR2(128) NOT NULL,
+  IS_ACTIVE    NUMBER(1)     DEFAULT 0 NOT NULL,
+  CONSTRAINT PK_DATA_TYPE_SETTINGS PRIMARY KEY (DOMAIN_NAME, DATA_TYPE_ID)
+);
+
+INSERT INTO DATA_TYPE_SETTINGS VALUES ('posts', 'engagement', 1);
+```
+
+`src/Processor.Host/oracle/init/01_data_type_settings.sql` creates and seeds this on first container
+start. Reads use **Dapper** over `Oracle.ManagedDataAccess.Core`.
+
+### Load lifecycle
+
+`DataTypeSettingsRefreshService` (a hosted service registered **before** the KafkaFlow one, so it runs
+first) owns the snapshot:
+
+- **Startup**: attempts the load up to `StartupAttempts` times (default **3**, spaced by
+  `StartupRetryDelaySeconds`). If all attempts fail it **throws** — the host exits non-zero and the pod
+  restarts. The processor never consumes without settings.
+- **Steady state**: reloads every `RefreshMinutes` (default **10**). A failed refresh logs a warning and
+  **keeps the current snapshot** — it never clears settings and never crashes. The next tick retries.
+- **Hot path**: reads hit only the in-memory snapshot, so a database outage produces **zero** per-message
+  queries regardless of throughput.
+
+The store is swappable via `DataTypeSettings:Store` (`oracle` | `inmemory`). Only the store changes —
+caching, refresh and fail-fast startup are identical either way, so a local `inmemory` run exercises the
+same code path as production.
+
+---
+
+## Configuration
+
+`appsettings.json` is the **only** settings file (no per-environment variants); environment-specific
+values come from environment variables or the deployment's config.
+
+| Key | Meaning |
+|---|---|
+| `Processor:Domain` | **The domain this deployment runs** (`posts` / `profiles`). Required. |
+| `Kafka:Brokers` | Broker list. Required — no default, because silently pointing at localhost is worse than refusing to start.¹ |
+| `Kafka:InputTopic` / `OutputTopic` / `DeadLetterTopic` | Per-deployment topics. |
+| `Kafka:ConsumerGroupId` | Per-domain consumer group. |
+| `Kafka:WorkersCount` / `BufferSize` | Parallelism — see below. |
+| `Kafka:AutoOffsetReset` | `earliest` (default) or `latest`.² |
+| `Kafka:StatisticsIntervalMs` | librdkafka statistics interval. |
+| `Oracle:ConnectionString` / `SettingsTable` | Settings store. `SettingsTable` must be a bare identifier — it is interpolated into SQL and validated as such. |
+| `DataTypeSettings:Store` | `oracle` (default) or `inmemory`. |
+| `DataTypeSettings:RefreshMinutes` | Snapshot reload interval (default 10). |
+| `DataTypeSettings:StartupAttempts` | Initial-load attempts before startup fails (default 3). |
+| `DataTypeSettings:HeaderName` | Header carrying the data type id. |
+| `Metrics:Port` | Port for `/metrics` and the probes. |
+| `Benchmark:WorkMicros` | Synthetic per-message CPU work for load testing; `0` = off. |
+
+¹ Note the .NET configuration binder **appends** to a non-empty collection default rather than replacing
+it, so a default broker list would survive into a production deployment. `Brokers` is therefore empty by
+default and validated at startup.
+
+² This overrides KafkaFlow's own `latest` default, deliberately: the processor consumes every message it
+can. With `latest`, a new deployment silently skips the existing backlog, and anything produced before
+the consumer group's first partition assignment completes is lost outright. Nothing in the pipeline
+depends on starting at the head of the topic.
+
+Deploying the two domains means the same image with two configs:
+
+```yaml
+# posts deployment                      # profiles deployment
+Processor__Domain: posts                Processor__Domain: profiles
+Kafka__InputTopic: posts-input          Kafka__InputTopic: profiles-input
+Kafka__OutputTopic: posts-output        Kafka__OutputTopic: profiles-output
+Kafka__DeadLetterTopic: posts-dlq       Kafka__DeadLetterTopic: profiles-dlq
+Kafka__ConsumerGroupId: posts-group     Kafka__ConsumerGroupId: profiles-group
+```
+
+---
+
+## Consumer worker tuning
 
 | Setting | Meaning |
 |---------|---------|
-| `Kafka:WorkersCount` | Number of worker loops (threads/tasks) processing messages in parallel. Workers are **not** partition consumers — one Kafka consumer fetches and the distribution strategy routes each message to a worker. |
+| `Kafka:WorkersCount` | Worker loops processing messages in parallel. Workers are **not** partition consumers — one Kafka consumer fetches and the distribution strategy routes each message to a worker. |
 | `Kafka:BufferSize` | Per-worker bounded prefetch channel. Total in-flight ≈ `WorkersCount × BufferSize`. |
-| `Benchmark:WorkMicros` | Synthetic CPU work per message (µs) for load testing; `0` = disabled (no effect on normal runs). |
 
-The consumer uses **`FreeWorkerDistributionStrategy`** because this system is **keyless**. With the
-default `BytesSum` strategy, null-key messages all hash to worker 0 — i.e. single-threaded regardless
-of `WorkersCount`. `FreeWorker` routes each message to any free worker (no per-key ordering).
+The consumer uses **`FreeWorkerDistributionStrategy`** because this system is **keyless** with respect to
+ordering. With the default `BytesSum` strategy, null-key messages all hash to worker 0 — i.e.
+single-threaded regardless of `WorkersCount`.
 
-A load-test sweep (`WORKERS_BUFFER_TUNING.pdf`) found: throughput scales with workers up to ≈ the
-host core count, then flattens while per-message latency rises (CPU oversubscription); buffer size has
-negligible effect on a keyless/CPU-bound workload. **Rule of thumb: set `WorkersCount` ≈ the pod's CPU
-allotment, keep `BufferSize` ~100.**
+A load-test sweep (`loadtests/workers-buffer-tuning`) found throughput scales with workers up to ≈ the
+host core count, then flattens while per-message latency rises; buffer size has negligible effect on a
+keyless/CPU-bound workload. **Rule of thumb: `WorkersCount` ≈ the pod's CPU allotment, `BufferSize` ~100.**
 
 ---
 
-## Health & Resilience
-
-The processor is designed to fail loudly and stay serving through transient Redis blips:
-
-- **Fail-fast startup.** The settings refresh service loads the snapshot before the consumer starts; if
-  Redis is unreachable or the initial load fails, `StartAsync` throws and **the host fails to start**
-  (non-zero exit) so Kubernetes restarts the pod. It never begins consuming without settings.
-- **Stale-tolerant refresh.** A background worker reloads the snapshot every `RefreshSeconds`. A failed
-  refresh **keeps the previous snapshot**, logs a warning, and increments
-  `datatype_settings_load_failures_total` — it never clears settings (so a data type isn't wrongly
-  treated as inactive because a reload failed).
-- **No hammering.** In cached mode the message path reads only the in-memory snapshot, so a Redis
-  outage produces **zero** per-message Redis calls regardless of throughput.
-
-### Kubernetes probes
-
-Exposed on the same port as `/metrics`:
+## Health & resilience
 
 | Endpoint | Checks | Fail behavior |
 |----------|--------|---------------|
-| `GET /health/live` | process only (no dependencies) | a Redis blip won't get the pod killed |
-| `GET /health/ready` | Redis reachable (PING) + settings snapshot loaded/fresh | reports NotReady (503) during a Redis outage; Degraded while serving a stale snapshot |
+| `GET /health/live` | process only (no dependencies) | a database blip won't get the pod killed |
+| `GET /health/ready` | data store reachable + settings snapshot loaded and fresh | NotReady (503) during an outage; **Degraded** while serving a snapshot older than 3× the refresh interval |
 
 ```yaml
 livenessProbe:  { httpGet: { path: /health/live,  port: 8080 }, periodSeconds: 10 }
 readinessProbe: { httpGet: { path: /health/ready, port: 8080 }, periodSeconds: 10 }
 ```
 
-## Observability (OpenTelemetry + Prometheus + Grafana)
+---
 
-The processor is an ASP.NET Core host that runs the KafkaFlow consumer/producers **and** exposes an
-OpenTelemetry-backed metrics endpoint for Prometheus to scrape.
+## Observability
 
-### Metrics endpoint
+`GET http://localhost:8080/metrics` — Prometheus exposition format, via OpenTelemetry. Traces and
+metrics also go out over OTLP to `OpenTelemetry:OtlpEndpoint` when available.
 
-- **`GET http://localhost:8080/metrics`** — Prometheus exposition format (OpenTelemetry `AddPrometheusExporter`).
-- Port is configurable via `Metrics:Port` in `appsettings.json`.
-
-Exported metrics include:
+Every message-outcome metric carries a **`domain`** label, so one dashboard compares the per-domain
+deployments running this same code.
 
 | Metric | Type | Meaning |
 |--------|------|---------|
-| `messages_processed_total` | counter | Messages sent to the output topic |
-| `messages_dead_lettered_total` | counter | Messages routed to the dead-letter topic |
-| `messages_dropped_total` | counter | Messages dropped (empty content) |
-| `messages_filtered_total{reason}` | counter | Messages filtered by data-type settings (`inactive_data_type` / `unknown_data_type` / `missing_data_type_id`) |
-| `messages_processing_duration_milliseconds` | histogram | Per-message handling latency (p50/p95/p99) |
-| `redis_operations_total{operation,status}` | counter | Redis round-trips (`get` / `load_all`, `ok` / `error`) |
-| `redis_operation_duration_milliseconds` | histogram | Redis round-trip latency |
-| `datatype_settings_reloads_total` / `datatype_settings_load_failures_total` | counter | Successful vs. failed settings reloads from Redis |
-| `datatype_settings_snapshot_size` / `datatype_settings_since_load_seconds` | gauge | Snapshot entry count; seconds since last successful load |
-| `kafka_consumer_lag` / `kafka_consumer_assignment_partitions` / `kafka_consumer_fetchq_messages` | gauge | From librdkafka statistics: total lag, assigned partitions, fetch-queue depth |
-| `kafka_consumer_rebalances_total` / `kafka_consumer_rx_messages_total` | counter | Rebalance count; messages received from brokers |
-| `kafka_broker_rtt_avg_milliseconds` / `kafka_broker_rtt_max_milliseconds` | gauge | Broker round-trip time (from statistics) |
-| `dotnet_*` | various | .NET runtime instrumentation (GC, memory, CPU, threads) |
-| KafkaFlow OpenTelemetry | traces | Consumer/producer spans (KafkaFlow exports traces, not metrics — Kafka metrics above come from librdkafka statistics) |
-
-Traces and metrics are also pushed via OTLP to the Elastic APM server (`OpenTelemetry:OtlpEndpoint`) when it is running.
-
-### Running the observability stack
-
-```bash
-cd Processor
-
-# 1. Start Kafka + Prometheus + Grafana (skip the heavier ELK stack)
-docker compose up -d zookeeper broker prometheus grafana
-
-# 2. Run the processor (exposes /metrics on :8080)
-dotnet run --project .
-
-# 3. Produce a few messages (note: JSON keys are PascalCase — Id / Content)
-printf '%s\n' \
-  '{"Id":"msg-001","Content":"hello kafka"}' \
-  '{"Id":"","Content":"missing id -> dead letter"}' \
-  '{"Id":"msg-002","Content":""}' \
-  | docker exec -i broker kafka-console-producer --bootstrap-server broker:9092 --topic input-topic
-```
-
-Then open:
-
-- **Metrics**: <http://localhost:8080/metrics>
-- **Prometheus**: <http://localhost:9090> (target `kafkaflow-processor` should be `UP` under Status → Targets)
-- **Grafana**: <http://localhost:3000> — anonymous access is enabled; the **KafkaFlow Processor** dashboard is
-  auto-provisioned with a Prometheus datasource.
-
-Prometheus reaches the host-run app via `host.docker.internal:8080` (configured in `prometheus/prometheus.yml`).
-In Kubernetes, drop this static target and let Prometheus scrape the pod's `/metrics` endpoint directly.
+| `messages_processed_total{domain}` | counter | Messages sent to the output topic |
+| `messages_dead_lettered_total{domain}` | counter | Messages routed to the dead-letter topic |
+| `messages_dropped_total{domain}` | counter | Messages dropped |
+| `messages_filtered_total{domain,reason}` | counter | Filtered by data-type settings |
+| `messages_processing_duration_milliseconds{domain}` | histogram | Per-message handling latency |
+| `datastore_operations_total{operation,status}` | counter | Settings store round-trips (`load_all` / `probe`, `ok` / `error`) |
+| `datastore_operation_duration_milliseconds` | histogram | Settings store latency |
+| `datatype_settings_reloads_total` / `..._load_failures_total` | counter | Successful vs. failed reloads |
+| `datatype_settings_snapshot_size` / `..._since_load_seconds` | gauge | Snapshot size; seconds since last successful load |
+| `kafka_consumer_lag` / `..._assignment_partitions` / `..._fetchq_messages` | gauge | From librdkafka statistics |
+| `kafka_consumer_rebalances_total` / `..._rx_messages_total` | counter | Rebalances; messages received |
+| `kafka_broker_rtt_avg_milliseconds` / `..._max_...` | gauge | Broker round-trip time |
+| `dotnet_*` | various | .NET runtime instrumentation |
 
 ---
 
-## Building & Testing
-
-### Building the Project
+## Running locally
 
 ```bash
-# Restore NuGet packages and compile
+cd src/Processor.Host
+
+# 1. Kafka + Oracle + Prometheus + Grafana (skip the heavier ELK stack)
+docker compose up -d zookeeper broker oracle prometheus grafana
+
+# 2. Run the posts domain (appsettings.json default)
+dotnet run --project .
+
+# …or the profiles domain, same code:
+Processor__Domain=profiles \
+Kafka__InputTopic=profiles-input Kafka__OutputTopic=profiles-output \
+Kafka__DeadLetterTopic=profiles-dlq Kafka__ConsumerGroupId=profiles-group \
+  dotnet run --project .
+```
+
+Produce a few posts. The key carries the data type id (`key.separator` avoids the `:` inside JSON), and
+JSON property names are **PascalCase**:
+
+```bash
+printf '%s\n' \
+  'engagement|{"Id":"post-1","Content":"hello #kafka","DomainData":{"AuthorHandle":"@ada","Network":"X","Likes":10,"Shares":2}}' \
+  'engagement|{"Id":"","Content":"no id -> dead letter","DomainData":{"AuthorHandle":"ada","Network":"x"}}' \
+  'retired-feed|{"Id":"post-3","Content":"inactive -> filtered","DomainData":{"AuthorHandle":"ada","Network":"x"}}' \
+  | docker exec -i broker kafka-console-producer --bootstrap-server broker:9092 \
+      --topic posts-input --property parse.key=true --property key.separator='|'
+```
+
+Then open **<http://localhost:8080/metrics>**, **<http://localhost:9090>** (Prometheus), and
+**<http://localhost:3000>** (Grafana — anonymous access, dashboard auto-provisioned).
+
+No Oracle handy? `DataTypeSettings__Store=inmemory` runs the identical pipeline against an empty
+settings set (everything filters as `unknown_data_type`).
+
+---
+
+## Testing
+
+```bash
 dotnet build
-
-# Run the application
-dotnet run --project Processor
+dotnet test                                        # everything, including the container-backed e2e suite
+dotnet test tests/Processor.Core.Tests             # shared pipeline
+dotnet test tests/Processor.Domains.Posts.Tests    # posts rules
+dotnet test tests/Processor.MockTests              # fast end-to-end
+dotnet test tests/Processor.HostE2ETests           # real Kafka + real Oracle (needs Docker; minutes)
 ```
 
-### Unit Testing Strategy
+| Project | What it covers | Needs Docker |
+|---|---|---|
+| `Processor.Core.Tests` | Shared pipeline, exercised against a **synthetic domain** so it can't lean on a real domain's rules. Filtering, short-circuit ordering, handler routing, header/key resolution, caching repository, the 3-attempt startup contract, health checks. | no |
+| `Processor.Domains.Posts.Tests` | Posts rules: handle/network normalization, hashtag extraction and de-duplication, share-weighted engagement score, derived fields never trusted from the wire. | no |
+| `Processor.Domains.Profiles.Tests` | Profiles rules: follower ratio (including the divide-by-zero guard), audience-tier boundaries, display-name fallback, drop-vs-dead-letter precedence. | no |
+| `Processor.Host.Tests` | Host composition: domain selection from config, the DI graph resolving fully closed, that a posts deployment carries no profiles types, hosted-service **ordering** (settings before Kafka), options binding. | no |
+| `Processor.MockTests` | Every JSON test case end-to-end through the **real DI graph and real startup**, with Kafka producers mocked and the in-memory store. Plus fail-fast startup, outage tolerance, and live settings changes. | no |
+| `Processor.HostE2ETests` | The same JSON cases through the **real host**: real Kafka broker and real Oracle (Testcontainers), including the schema and table. Plus Oracle SQL/column mapping, per-domain row scoping, and both domains running side by side from one codebase. | **yes** |
 
-Tests are organized into three categories:
+### Data-driven test cases
 
-#### 1. **Field Builder Unit Tests** (`Processor.Tests/Builders/`)
+Cases live in `tests/TestData/<Domain>/test_case_*.json` and are driven by **both** e2e suites, so the
+mock and real-infrastructure runs assert the same expectations. Each file is one xUnit case, so a
+failure names the file.
 
-Isolated tests for each field builder logic:
-
-```csharp
-[Fact]
-public void OutputIdBuilder_ReturnsDeadLetter_WhenIdIsMissing()
-{
-    var builder = new OutputIdBuilder();
-    var input = new InputMessage { Id = " ", Content = "hello" };
-    
-    var result = builder.Build(input);
-    
-    Assert.Equal(BuildStatus.DeadLetter, result.Status);
-    Assert.Equal("Missing message id", result.Reason);
-}
-```
-
-**Benefits:**
-- ✅ Fast execution (milliseconds)
-- ✅ Test individual business logic in isolation
-- ✅ Easy to understand and maintain
-- ✅ No external dependencies (no Kafka, mocking)
-
-#### 2. **Integration Tests** (`Processor.Tests/MessageHandlerTests.cs`)
-
-Data-driven tests using JSON test cases to verify the complete message processing pipeline:
-
-```csharp
-[Theory]
-[MemberData(nameof(TestDataLoader.TestCases), MemberType = typeof(TestDataLoader))]
-public async Task Handle_ProcessesMessageCorrectly(string fileName, string fileContent)
-{
-    var data = DeserializeTestData(fileName, fileContent);
-    
-    // Creates mocks for producers
-    var mockProducer = new Mock<IMessageProducer<OutputMessage>>();
-    var mockDLQProducer = new Mock<IMessageProducer<DeadLetterMessage>>();
-    
-    // Executes handler
-    await handler.Handle(mockContext.Object, data.Input!);
-    
-    // Verifies based on expected outcome
-    switch (data.ExpectedOutcome)
-    {
-        case "output":
-            mockProducer.Verify(p => p.ProduceAsync(...), Times.Once);
-            break;
-        case "deadletter":
-            mockDLQProducer.Verify(p => p.ProduceAsync(...), Times.Once);
-            break;
-        case "dropped":
-            mockProducer.Verify(p => p.ProduceAsync(...), Times.Never);
-            break;
-    }
-}
-```
-
-**Benefits:**
-- ✅ Test complete message flow
-- ✅ Data-driven approach (separate test data from test logic)
-- ✅ Easy to add new test cases
-- ✅ Verifies mocked Kafka producers were called correctly
-
-### Data-Driven Tests
-
-Test cases are defined in **JSON files** in `Processor.Tests/TestsData/`:
-
-#### Output Case (test_case_1.json)
 ```json
 {
+  "dataTypeId": "engagement",
   "input": {
-    "id": "msg-001",
-    "content": "hello kafka"
+    "id": "post-002",
+    "content": "shipping #KafkaFlow with #dotnet",
+    "domainData": { "authorHandle": "grace", "network": "mastodon", "likes": 5, "shares": 5 }
   },
   "expectedOutcome": "output",
   "expectedOutput": {
-    "id": "msg-001",
-    "processedContent": "HELLO KAFKA"
+    "id": "post-002",
+    "processedContent": "SHIPPING #KAFKAFLOW WITH #DOTNET",
+    "domainData": {
+      "authorHandle": "grace", "network": "mastodon", "likes": 5, "shares": 5,
+      "hashtags": ["kafkaflow", "dotnet"], "engagementScore": 20
+    }
   }
 }
 ```
 
-#### Dead Letter Case (test_case_deadletter.json)
-```json
-{
-  "input": {
-    "id": "",
-    "content": "invalid message id"
-  },
-  "expectedOutcome": "deadletter",
-  "expectedDeadLetterReason": "Missing message id",
-  "expectedOutput": null
-}
-```
+| Field | Purpose |
+|---|---|
+| `dataTypeId` | Sent as the Kafka key. `null` exercises `missing_data_type_id`. |
+| `dataTypeRegistered` | `false` → no settings row, exercising `unknown_data_type`. |
+| `dataTypeActive` | `false` → an inactive row, exercising `inactive_data_type`. |
+| `expectedOutcome` | `output` \| `deadletter` \| `dropped` \| `filtered`. |
+| `expectedOutput` | Asserted fields, including the processed `domainData` (compared as canonical JSON). `processedAt` and `processorName` are environment-dependent and deliberately not asserted. |
+| `expectedDeadLetterReason` / `expectedDropReason` / `expectedFilterReason` | Required for their outcome. |
 
-#### Drop Case (test_case_dropped.json)
-```json
-{
-  "input": {
-    "id": "msg-drop-001",
-    "content": ""
-  },
-  "expectedOutcome": "dropped",
-  "expectedDropReason": "Content is empty",
-  "expectedOutput": null
-}
-```
+A malformed or internally inconsistent case **fails loudly** rather than passing silently.
 
-#### Test Data Loading (TestDataLoader.cs)
-
-```csharp
-public static IEnumerable<object[]> TestCases
-{
-    get
-    {
-        var testFiles = Directory.GetFiles(testDataDir, "test_case_*.json")
-            .OrderBy(f => f);
-        
-        foreach (var file in testFiles)
-        {
-            var fileName = Path.GetFileName(file);
-            var fileContent = File.ReadAllText(file);
-            
-            // Yield raw strings to enable test discovery
-            yield return new object[] { fileName, fileContent };
-        }
-    }
-}
-```
-
-**Key Design Decisions:**
-- **Primitives Only**: Object arrays contain only primitives (`string`, `int`) to enable xUnit test enumeration
-- **Lazy Deserialization**: JSON deserialization happens inside the test method
-- **Automatic Discovery**: Tests are discovered and enumerated individually per JSON file
-- **Auto-Cleanup**: `CleanTestData` MSBuild target removes stale test files from output directory
-
-### VS Code Test Explorer
-
-The project is fully integrated with VS Code's Test Explorer, providing a modern IDE experience:
-
-#### Features
-
-✅ **Individual Test Discovery**
-- Each JSON test case appears as a separate, individually runnable test
-- Tests are enumerated with their file names for easy identification
-- No test aggregation or grouped execution
-
-✅ **Easy Navigation**
-- Click on any test to jump directly to the test method
-- View test results in the inline code editor
-- Hover over test results for detailed error messages
-
-✅ **Advanced Filtering**
-- Run/debug tests by outcome type (filter by `deadletter`, `dropped`, etc.)
-- Run only builder unit tests
-- Run full integration suite
-
-#### How It Works
-
-The key to proper test enumeration is using **primitive types in test data**:
-
-```csharp
-// ✅ Works: Primitives allow enumeration
-yield return new object[] { fileName, fileContent };
-
-// ❌ Doesn't enumerate: Complex objects prevent discovery
-yield return new object[] { new TestData { ... } };
-```
-
-When xUnit encounters primitive types (`string`, `int`, `DateTime`), it enumerates each test case and displays them individually in Test Explorer. Complex objects prevent this discovery.
+The test-case model and loader are shared source (`tests/Shared/`, linked via `tests/TestData.targets`)
+rather than a seventh project.
 
 ---
 
-## Running Tests
+## Load tests
 
-```bash
-# Run all tests
-dotnet test
-
-# Run only builder unit tests
-dotnet test Processor.Tests/Builders/
-
-# Run with verbosity
-dotnet test -v normal
-
-# List all discovered tests
-dotnet test --list-tests
-```
-
-### Example Test Output
-
-```
-The following Tests are available:
-    Handle ProcessesMessageCorrectly(fileName: "test_case_1.json", ...)
-    Handle ProcessesMessageCorrectly(fileName: "test_case_2.json", ...)
-    Handle ProcessesMessageCorrectly(fileName: "test_case_deadletter.json", ...)
-    Handle ProcessesMessageCorrectly(fileName: "test_case_dropped.json", ...)
-    OutputIdBuilder_ReturnsOk_WhenIdIsPresent
-    OutputIdBuilder_ReturnsDeadLetter_WhenIdIsMissing
-    ProcessedContentBuilder_ReturnsOk_WhenContentIsPresent
-    ProcessedContentBuilder_ReturnsDrop_WhenContentIsMissing
-```
-
----
-
-## Key Design Patterns
-
-### 1. Builder Pattern for Separation of Concerns
-Each output field has its own builder class with:
-- Single responsibility (compute one field)
-- Independent validation logic
-- Ability to decide message routing (`Ok`/`DeadLetter`/`Drop`)
-- Unit testable in isolation
-
-### 2. Orchestrator Pattern
-`OutputMessageBuilder` coordinates field builders:
-- Invokes builders sequentially
-- Handles outcome aggregation
-- Short-circuits on failure
-- Returns unified result
-
-### 3. Data-Driven Testing
-Test cases live in JSON files:
-- Easy to add new scenarios without code changes
-- Business requirements readable by non-developers
-- Test data versioned alongside code
-- Simple to generate test reports
-
----
+`loadtests/` holds the historical load-test suites and their reports. Note the two `redis-*` suites
+predate the move to Oracle and are kept for their findings, not as runnable tooling.
 
 ## Dependencies
 
-- **KafkaFlow**: 4.1.0 - Kafka consumer/producer framework
-- **xUnit**: 2.9.3 - Testing framework
-- **Moq**: 4.20.72 - Mocking library
-- **.NET**: 9.0
-
----
-
-## Contributing
-
-When adding new builders:
-1. Create class in `Processor/Builders/FieldBuilders/`
-2. Implement `IOutputFieldBuilder<T>`
-3. Add unit tests in `Processor.Tests/Builders/`
-4. Register in `Program.cs` DI container
-5. Integrate into `OutputMessageBuilder`
-
----
+KafkaFlow 4.1.0 · Dapper 2.1.66 · Oracle.ManagedDataAccess.Core 23.9.1 · OpenTelemetry 1.11.2 ·
+xUnit 2.9.3 · Moq 4.20.72 · Testcontainers 4.0.0 · .NET 9
 
 ## License
 

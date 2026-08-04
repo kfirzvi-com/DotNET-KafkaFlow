@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "engagement",
+  "input": {
+    "id": "",
+    "content": "post with no id",
+    "domainData": {
+      "authorHandle": "ada",
+      "network": "x",
+      "likes": 1,
+      "shares": 0
+    }
+  },
+  "expectedOutcome": "deadletter",
+  "expectedDeadLetterReason": "Missing message id"
+}

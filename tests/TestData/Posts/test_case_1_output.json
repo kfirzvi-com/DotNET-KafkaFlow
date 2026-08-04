@@ -1,0 +1,26 @@
+{
+  "dataTypeId": "engagement",
+  "input": {
+    "id": "post-001",
+    "content": "hello kafka world",
+    "domainData": {
+      "authorHandle": "@Ada",
+      "network": "X",
+      "likes": 10,
+      "shares": 2
+    }
+  },
+  "expectedOutcome": "output",
+  "expectedOutput": {
+    "id": "post-001",
+    "processedContent": "HELLO KAFKA WORLD",
+    "domainData": {
+      "authorHandle": "ada",
+      "network": "x",
+      "likes": 10,
+      "shares": 2,
+      "hashtags": [],
+      "engagementScore": 16
+    }
+  }
+}

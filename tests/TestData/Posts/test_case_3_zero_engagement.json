@@ -1,0 +1,26 @@
+{
+  "dataTypeId": "engagement",
+  "input": {
+    "id": "post-003",
+    "content": "a quiet post",
+    "domainData": {
+      "authorHandle": "linus",
+      "network": "bluesky",
+      "likes": 0,
+      "shares": 0
+    }
+  },
+  "expectedOutcome": "output",
+  "expectedOutput": {
+    "id": "post-003",
+    "processedContent": "A QUIET POST",
+    "domainData": {
+      "authorHandle": "linus",
+      "network": "bluesky",
+      "likes": 0,
+      "shares": 0,
+      "hashtags": [],
+      "engagementScore": 0
+    }
+  }
+}

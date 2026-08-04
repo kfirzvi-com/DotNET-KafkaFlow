@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "engagement",
+  "input": {
+    "id": "post-007",
+    "content": "",
+    "domainData": {
+      "authorHandle": "ada",
+      "network": "x",
+      "likes": 4,
+      "shares": 1
+    }
+  },
+  "expectedOutcome": "dropped",
+  "expectedDropReason": "Content is empty"
+}

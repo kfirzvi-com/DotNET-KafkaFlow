@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "directory",
+  "input": {
+    "id": "profile-008",
+    "content": "",
+    "domainData": {
+      "handle": "ada",
+      "network": "x",
+      "followers": 100,
+      "following": 10
+    }
+  },
+  "expectedOutcome": "dropped",
+  "expectedDropReason": "Content is empty"
+}

@@ -1,9 +1,0 @@
-{
-  "input": {
-    "id": "",
-    "content": "invalid message id"
-  },
-  "expectedOutcome": "deadletter",
-  "expectedDeadLetterReason": "Missing message id",
-  "expectedOutput": null
-}

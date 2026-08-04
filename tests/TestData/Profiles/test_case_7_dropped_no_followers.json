@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "directory",
+  "input": {
+    "id": "profile-007",
+    "content": "brand new account",
+    "domainData": {
+      "handle": "newcomer",
+      "network": "x",
+      "followers": 0,
+      "following": 12
+    }
+  },
+  "expectedOutcome": "dropped",
+  "expectedDropReason": "Profile has no followers"
+}

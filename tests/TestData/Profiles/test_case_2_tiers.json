@@ -1,0 +1,30 @@
+{
+  "dataTypeId": "directory",
+  "input": {
+    "id": "profile-002",
+    "content": "mega account",
+    "domainData": {
+      "handle": "grace",
+      "network": "mastodon",
+      "displayName": "Grace Hopper",
+      "followers": 2000000,
+      "following": 100,
+      "verified": true
+    }
+  },
+  "expectedOutcome": "output",
+  "expectedOutput": {
+    "id": "profile-002",
+    "processedContent": "MEGA ACCOUNT",
+    "domainData": {
+      "handle": "grace",
+      "network": "mastodon",
+      "displayName": "Grace Hopper",
+      "followers": 2000000,
+      "following": 100,
+      "verified": true,
+      "followerRatio": 20000.0,
+      "audienceTier": "mega"
+    }
+  }
+}

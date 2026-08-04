@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "engagement",
+  "input": {
+    "id": "post-005",
+    "content": "anonymous post",
+    "domainData": {
+      "authorHandle": "   ",
+      "network": "x",
+      "likes": 3,
+      "shares": 1
+    }
+  },
+  "expectedOutcome": "deadletter",
+  "expectedDeadLetterReason": "Missing post author handle"
+}

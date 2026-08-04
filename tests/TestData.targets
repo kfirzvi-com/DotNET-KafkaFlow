@@ -1,0 +1,25 @@
+<Project>
+
+  <!--
+    Shared by the test projects that run the JSON test cases (mock end-to-end and host end-to-end), so
+    both drive the *same* per-domain data files under tests/TestData/<domain>/ rather than keeping
+    their own copies. Files land in the output directory as TestData/<domain>/<file>.json.
+  -->
+  <ItemGroup>
+    <Content Include="$(MSBuildThisFileDirectory)TestData\**\*.json"
+             Link="TestData\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Test-case loading shared by both end-to-end suites. -->
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Shared\*.cs"
+             Link="Shared\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <!-- Drop stale copies so removing a test case actually removes the test. -->
+  <Target Name="CleanTestData" BeforeTargets="Build">
+    <RemoveDir Directories="$(OutputPath)TestData" />
+  </Target>
+
+</Project>

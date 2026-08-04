@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "Posts": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "Processor__Domain": "posts"
+      }
+    },
+    "Profiles": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "Processor__Domain": "profiles",
+        "Kafka__InputTopic": "profiles-input",
+        "Kafka__OutputTopic": "profiles-output",
+        "Kafka__DeadLetterTopic": "profiles-dead-letter",
+        "Kafka__ConsumerGroupId": "profiles-processor-group"
+      }
+    },
+    "Posts (no Oracle)": {
+      "commandName": "Project",
+      "dotnetRunMessages": true,
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Development",
+        "Processor__Domain": "posts",
+        "DataTypeSettings__Store": "inmemory"
+      }
+    }
+  }
+}

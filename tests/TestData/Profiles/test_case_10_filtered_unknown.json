@@ -1,0 +1,16 @@
+{
+  "dataTypeId": "never-configured",
+  "dataTypeRegistered": false,
+  "input": {
+    "id": "profile-010",
+    "content": "from an unknown directory",
+    "domainData": {
+      "handle": "ada",
+      "network": "x",
+      "followers": 100,
+      "following": 10
+    }
+  },
+  "expectedOutcome": "filtered",
+  "expectedFilterReason": "unknown_data_type"
+}

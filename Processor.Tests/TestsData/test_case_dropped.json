@@ -1,9 +1,0 @@
-{
-  "input": {
-    "id": "msg-drop-001",
-    "content": ""
-  },
-  "expectedOutcome": "dropped",
-  "expectedDropReason": "Content is empty",
-  "expectedOutput": null
-}

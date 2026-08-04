@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "directory",
+  "input": {
+    "id": "profile-006",
+    "content": "broken producer",
+    "domainData": {
+      "handle": "ada",
+      "network": "x",
+      "followers": -5,
+      "following": 5
+    }
+  },
+  "expectedOutcome": "deadletter",
+  "expectedDeadLetterReason": "Negative follower counters"
+}

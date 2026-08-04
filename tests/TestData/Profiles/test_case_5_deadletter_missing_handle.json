@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "directory",
+  "input": {
+    "id": "profile-005",
+    "content": "handle-less profile",
+    "domainData": {
+      "handle": "",
+      "network": "x",
+      "followers": 10,
+      "following": 5
+    }
+  },
+  "expectedOutcome": "deadletter",
+  "expectedDeadLetterReason": "Missing profile handle"
+}

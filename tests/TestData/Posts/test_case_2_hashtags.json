@@ -1,0 +1,26 @@
+{
+  "dataTypeId": "engagement",
+  "input": {
+    "id": "post-002",
+    "content": "shipping #KafkaFlow with #dotnet and #KAFKAFLOW again",
+    "domainData": {
+      "authorHandle": "grace",
+      "network": "mastodon",
+      "likes": 5,
+      "shares": 5
+    }
+  },
+  "expectedOutcome": "output",
+  "expectedOutput": {
+    "id": "post-002",
+    "processedContent": "SHIPPING #KAFKAFLOW WITH #DOTNET AND #KAFKAFLOW AGAIN",
+    "domainData": {
+      "authorHandle": "grace",
+      "network": "mastodon",
+      "likes": 5,
+      "shares": 5,
+      "hashtags": ["kafkaflow", "dotnet"],
+      "engagementScore": 20
+    }
+  }
+}

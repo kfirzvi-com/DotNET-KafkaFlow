@@ -16,8 +16,8 @@ Finding: throughput scales with workers up to ≈ the host core count, then flat
 ## Run
 
 ```bash
-cd Processor && docker compose up -d zookeeper broker && cd ..
-dotnet build Processor/Processor.csproj -c Release
+cd src/Processor.Host && docker compose up -d zookeeper broker && cd ../..
+dotnet build src/Processor.Host/Processor.Host.csproj -c Release
 
 python3 loadtests/workers-buffer-tuning/gen_load.py     # -> .work/load_keyless.txt
 loadtests/workers-buffer-tuning/sweep.sh                # 9 runs -> .work/sweep_*.json

@@ -3,7 +3,7 @@
 set -u
 ROOT="${PROJECT_ROOT:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}"
 SP="${WORK_DIR:-$(dirname "$0")/.work}"
-PROJ="$ROOT/Processor/Processor.csproj"
+PROJ="$ROOT/src/Processor.Host/Processor.Host.csproj"
 export WORK_DIR="$SP"
 mkdir -p "$SP"
 N=300000

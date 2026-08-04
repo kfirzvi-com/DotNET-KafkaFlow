@@ -1,0 +1,16 @@
+{
+  "dataTypeId": "retired-directory",
+  "dataTypeActive": false,
+  "input": {
+    "id": "profile-009",
+    "content": "from a retired directory",
+    "domainData": {
+      "handle": "ada",
+      "network": "x",
+      "followers": 100,
+      "following": 10
+    }
+  },
+  "expectedOutcome": "filtered",
+  "expectedFilterReason": "inactive_data_type"
+}

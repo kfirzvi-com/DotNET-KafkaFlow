@@ -1,0 +1,16 @@
+{
+  "dataTypeId": "never-configured",
+  "dataTypeRegistered": false,
+  "input": {
+    "id": "post-009",
+    "content": "from an unknown feed",
+    "domainData": {
+      "authorHandle": "ada",
+      "network": "x",
+      "likes": 9,
+      "shares": 3
+    }
+  },
+  "expectedOutcome": "filtered",
+  "expectedFilterReason": "unknown_data_type"
+}

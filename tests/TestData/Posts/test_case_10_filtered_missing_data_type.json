@@ -1,0 +1,15 @@
+{
+  "dataTypeId": null,
+  "input": {
+    "id": "post-010",
+    "content": "no data type id at all",
+    "domainData": {
+      "authorHandle": "ada",
+      "network": "x",
+      "likes": 2,
+      "shares": 0
+    }
+  },
+  "expectedOutcome": "filtered",
+  "expectedFilterReason": "missing_data_type_id"
+}

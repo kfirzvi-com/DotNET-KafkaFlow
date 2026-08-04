@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "engagement",
+  "input": {
+    "id": "post-006",
+    "content": "broken producer",
+    "domainData": {
+      "authorHandle": "ada",
+      "network": "x",
+      "likes": -1,
+      "shares": 0
+    }
+  },
+  "expectedOutcome": "deadletter",
+  "expectedDeadLetterReason": "Negative engagement counters"
+}

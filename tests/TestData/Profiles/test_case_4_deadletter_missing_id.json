@@ -1,0 +1,15 @@
+{
+  "dataTypeId": "directory",
+  "input": {
+    "id": "  ",
+    "content": "profile with no id",
+    "domainData": {
+      "handle": "ada",
+      "network": "x",
+      "followers": 10,
+      "following": 5
+    }
+  },
+  "expectedOutcome": "deadletter",
+  "expectedDeadLetterReason": "Missing message id"
+}

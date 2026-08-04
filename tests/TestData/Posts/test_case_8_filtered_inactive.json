@@ -1,0 +1,16 @@
+{
+  "dataTypeId": "retired-feed",
+  "dataTypeActive": false,
+  "input": {
+    "id": "post-008",
+    "content": "from a retired feed",
+    "domainData": {
+      "authorHandle": "ada",
+      "network": "x",
+      "likes": 9,
+      "shares": 3
+    }
+  },
+  "expectedOutcome": "filtered",
+  "expectedFilterReason": "inactive_data_type"
+}

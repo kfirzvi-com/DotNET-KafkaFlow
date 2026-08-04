@@ -1,0 +1,30 @@
+{
+  "dataTypeId": "directory",
+  "input": {
+    "id": "profile-003",
+    "content": "no display name",
+    "domainData": {
+      "handle": "@Linus",
+      "network": "bluesky",
+      "displayName": "",
+      "followers": 250000,
+      "following": 0,
+      "verified": false
+    }
+  },
+  "expectedOutcome": "output",
+  "expectedOutput": {
+    "id": "profile-003",
+    "processedContent": "NO DISPLAY NAME",
+    "domainData": {
+      "handle": "linus",
+      "network": "bluesky",
+      "displayName": "Linus",
+      "followers": 250000,
+      "following": 0,
+      "verified": false,
+      "followerRatio": 0.0,
+      "audienceTier": "macro"
+    }
+  }
+}
