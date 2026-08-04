@@ -1,6 +1,9 @@
+using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Processor.Core.Messages;
+using Xunit.Sdk;
 
 namespace Processor.Tests.Shared;
 
@@ -130,22 +133,169 @@ public static class TestCaseJson
     }
 
     /// <summary>
-    /// Canonical JSON for comparing domain payloads. Property order is normalized, so an assertion
-    /// failure prints a readable diff of the whole payload instead of a per-field cascade.
+    /// Write options for the comparison forms. camelCase so the printed JSON matches the casing used in
+    /// the test-case files and can be eyeballed against them directly.
     /// </summary>
-    public static string Canonical<T>(T value)
+    private static readonly JsonSerializerOptions CanonicalOptions = new()
     {
-        var json = JsonSerializer.SerializeToNode(value, Options);
-        return Sort(json)?.ToJsonString() ?? "null";
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        WriteIndented = true
+    };
+
+    /// <summary>
+    /// Asserts two payloads match, reporting <em>every</em> difference by JSON path.
+    /// <para>
+    /// Comparing canonical JSON strings with <c>Assert.Equal</c> was not good enough: it reports only
+    /// the first differing character, in a truncated single-line window, with no field name — so a
+    /// payload with three wrong fields showed one of them and left you counting characters.
+    /// </para>
+    /// </summary>
+    /// <param name="subject">What is being compared, e.g. the test-case file name.</param>
+    public static void AssertMatches<T>(T expected, T actual, string subject)
+    {
+        var expectedNode = Sort(JsonSerializer.SerializeToNode(expected, CanonicalOptions));
+        var actualNode = Sort(JsonSerializer.SerializeToNode(actual, CanonicalOptions));
+
+        var differences = new List<string>();
+        Compare(path: string.Empty, expectedNode, actualNode, differences);
+
+        if (differences.Count == 0)
+        {
+            return;
+        }
+
+        var report = new StringBuilder();
+        report.AppendLine($"{subject} does not match the expected payload.");
+        report.AppendLine();
+        report.AppendLine(differences.Count == 1 ? "1 difference:" : $"{differences.Count} differences:");
+        foreach (var difference in differences)
+        {
+            report.AppendLine($"  {difference}");
+        }
+
+        report.AppendLine();
+        report.AppendLine("expected:");
+        report.AppendLine(Indent(expectedNode));
+        report.AppendLine("actual:");
+        report.AppendLine(Indent(actualNode));
+
+        throw new XunitException(report.ToString().TrimEnd());
     }
 
-    private static System.Text.Json.Nodes.JsonNode? Sort(System.Text.Json.Nodes.JsonNode? node)
+    /// <summary>Canonical JSON for a payload — property order normalized, camelCase, indented.</summary>
+    public static string Canonical<T>(T value) =>
+        Indent(Sort(JsonSerializer.SerializeToNode(value, CanonicalOptions)));
+
+    private static string Indent(JsonNode? node) =>
+        node?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "null";
+
+    /// <summary>Walks both trees together, collecting one line per difference found.</summary>
+    private static void Compare(string path, JsonNode? expected, JsonNode? actual, List<string> differences)
+    {
+        var label = string.IsNullOrEmpty(path) ? "(root)" : path;
+
+        if (expected is null && actual is null)
+        {
+            return;
+        }
+
+        if (expected is null || actual is null)
+        {
+            differences.Add($"{label}: expected {Describe(expected)} but was {Describe(actual)}");
+            return;
+        }
+
+        switch (expected)
+        {
+            case JsonObject expectedObject when actual is JsonObject actualObject:
+            {
+                var keys = expectedObject.Select(p => p.Key)
+                    .Union(actualObject.Select(p => p.Key), StringComparer.Ordinal)
+                    .OrderBy(k => k, StringComparer.Ordinal);
+
+                foreach (var key in keys)
+                {
+                    var childPath = string.IsNullOrEmpty(path) ? key : $"{path}.{key}";
+                    var hasExpected = expectedObject.TryGetPropertyValue(key, out var expectedChild);
+                    var hasActual = actualObject.TryGetPropertyValue(key, out var actualChild);
+
+                    if (!hasExpected)
+                    {
+                        differences.Add($"{childPath}: unexpected property, was {Describe(actualChild)}");
+                    }
+                    else if (!hasActual)
+                    {
+                        differences.Add($"{childPath}: expected {Describe(expectedChild)} but the property is absent");
+                    }
+                    else
+                    {
+                        Compare(childPath, expectedChild, actualChild, differences);
+                    }
+                }
+
+                return;
+            }
+
+            case JsonArray expectedArray when actual is JsonArray actualArray:
+            {
+                if (expectedArray.Count != actualArray.Count)
+                {
+                    differences.Add(
+                        $"{label}: expected {expectedArray.Count} item(s) but was {actualArray.Count}");
+                }
+
+                for (var i = 0; i < Math.Max(expectedArray.Count, actualArray.Count); i++)
+                {
+                    var childPath = $"{path}[{i}]";
+
+                    if (i >= expectedArray.Count)
+                    {
+                        differences.Add($"{childPath}: unexpected item {Describe(actualArray[i])}");
+                    }
+                    else if (i >= actualArray.Count)
+                    {
+                        differences.Add($"{childPath}: expected {Describe(expectedArray[i])} but it is missing");
+                    }
+                    else
+                    {
+                        Compare(childPath, expectedArray[i], actualArray[i], differences);
+                    }
+                }
+
+                return;
+            }
+
+            default:
+            {
+                // Values (and container/value type mismatches) compare by their JSON text.
+                var expectedText = expected.ToJsonString();
+                var actualText = actual.ToJsonString();
+                if (!string.Equals(expectedText, actualText, StringComparison.Ordinal))
+                {
+                    differences.Add($"{label}: expected {expectedText} but was {actualText}");
+                }
+
+                return;
+            }
+        }
+    }
+
+    /// <summary>Short description of a node for a difference line.</summary>
+    private static string Describe(JsonNode? node) => node switch
+    {
+        null => "null",
+        JsonObject obj => $"an object with {obj.Count} property(ies)",
+        JsonArray array => $"an array of {array.Count} item(s)",
+        _ => node.ToJsonString()
+    };
+
+    private static JsonNode? Sort(JsonNode? node)
     {
         switch (node)
         {
-            case System.Text.Json.Nodes.JsonObject obj:
+            case JsonObject obj:
             {
-                var sorted = new System.Text.Json.Nodes.JsonObject();
+                var sorted = new JsonObject();
                 foreach (var property in obj.OrderBy(p => p.Key, StringComparer.Ordinal))
                 {
                     sorted[property.Key] = Sort(property.Value?.DeepClone());
@@ -153,9 +303,9 @@ public static class TestCaseJson
 
                 return sorted;
             }
-            case System.Text.Json.Nodes.JsonArray array:
+            case JsonArray array:
             {
-                var mapped = new System.Text.Json.Nodes.JsonArray();
+                var mapped = new JsonArray();
                 foreach (var item in array)
                 {
                     mapped.Add(Sort(item?.DeepClone()));

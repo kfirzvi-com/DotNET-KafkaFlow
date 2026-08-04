@@ -29,11 +29,11 @@ public static class TestCaseRunner
         switch (testCase.ExpectedOutcome.ToLowerInvariant())
         {
             case TestOutcomes.Output:
-                AssertProducedToOutput(app, testCase);
+                AssertProducedToOutput(app, testCase, fileName);
                 break;
 
             case TestOutcomes.DeadLetter:
-                AssertDeadLettered(app, testCase);
+                AssertDeadLettered(app, testCase, fileName);
                 break;
 
             case TestOutcomes.Dropped:
@@ -77,7 +77,8 @@ public static class TestCaseRunner
 
     private static void AssertProducedToOutput<TInput, TDomainData>(
         MockProcessorApp<TInput, TDomainData> app,
-        ProcessorTestCase<TInput, TDomainData> testCase)
+        ProcessorTestCase<TInput, TDomainData> testCase,
+        string fileName)
         where TInput : InputMessage<TDomainData>
         where TDomainData : class, IDomainData, new()
     {
@@ -105,15 +106,16 @@ public static class TestCaseRunner
 
         if (expected.DomainData is not null)
         {
-            Assert.Equal(
-                TestCaseJson.Canonical(expected.DomainData),
-                TestCaseJson.Canonical(produced.DomainData));
+            TestCaseJson.AssertMatches(
+                expected.DomainData, produced.DomainData,
+                $"Processed domain payload for {fileName}");
         }
     }
 
     private static void AssertDeadLettered<TInput, TDomainData>(
         MockProcessorApp<TInput, TDomainData> app,
-        ProcessorTestCase<TInput, TDomainData> testCase)
+        ProcessorTestCase<TInput, TDomainData> testCase,
+        string fileName)
         where TInput : InputMessage<TDomainData>
         where TDomainData : class, IDomainData, new()
     {
@@ -126,9 +128,9 @@ public static class TestCaseRunner
         // The original must survive intact for replay, domain payload included.
         Assert.Equal(testCase.Input!.Id, deadLettered.OriginalMessage.Id);
         Assert.Equal(testCase.Input!.Content, deadLettered.OriginalMessage.Content);
-        Assert.Equal(
-            TestCaseJson.Canonical(testCase.Input!.DomainData),
-            TestCaseJson.Canonical(deadLettered.OriginalMessage.DomainData));
+        TestCaseJson.AssertMatches(
+            testCase.Input!.DomainData, deadLettered.OriginalMessage.DomainData,
+            $"Dead-lettered original payload for {fileName}");
         Assert.NotEqual(default, deadLettered.FailedAt);
     }
 

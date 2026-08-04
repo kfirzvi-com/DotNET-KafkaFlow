@@ -69,9 +69,9 @@ public static class E2ETestCaseRunner
 
                 if (expected.DomainData is not null)
                 {
-                    Assert.Equal(
-                        TestCaseJson.Canonical(expected.DomainData),
-                        TestCaseJson.Canonical(message.DomainData));
+                    TestCaseJson.AssertMatches(
+                        expected.DomainData, message.DomainData,
+                        $"Processed domain payload for {fileName}");
                 }
 
                 break;
@@ -85,9 +85,9 @@ public static class E2ETestCaseRunner
                 Assert.Equal(testCase.ExpectedDeadLetterReason, message.Reason);
                 Assert.Equal(new TDomainData().DomainName, message.Domain);
                 Assert.Equal(testCase.Input!.Content, message.OriginalMessage.Content);
-                Assert.Equal(
-                    TestCaseJson.Canonical(testCase.Input!.DomainData),
-                    TestCaseJson.Canonical(message.OriginalMessage.DomainData));
+                TestCaseJson.AssertMatches(
+                    testCase.Input!.DomainData, message.OriginalMessage.DomainData,
+                    $"Dead-lettered original payload for {fileName}");
 
                 break;
             }

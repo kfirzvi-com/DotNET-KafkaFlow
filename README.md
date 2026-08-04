@@ -424,7 +424,7 @@ failure names the file.
 | `dataTypeRegistered` | `false` → no settings row, exercising `unknown_data_type`. |
 | `dataTypeActive` | `false` → an inactive row, exercising `inactive_data_type`. |
 | `expectedOutcome` | `output` \| `deadletter` \| `dropped` \| `filtered`. |
-| `expectedOutput` | Asserted fields, including the processed `domainData` (compared as canonical JSON). `processedAt` and `processorName` are environment-dependent and deliberately not asserted. |
+| `expectedOutput` | Asserted fields, including the processed `domainData` (structurally compared — see below). `processedAt` and `processorName` are environment-dependent and deliberately not asserted. |
 | `expectedDeadLetterReason` / `expectedDropReason` / `expectedFilterReason` | Required for their outcome. |
 
 A malformed or internally inconsistent case **fails loudly** rather than passing silently.
@@ -447,6 +447,32 @@ timeout instead of silently passing an emptiness assertion.
 
 The test-case model and loader are shared source (`tests/Shared/`, linked via `tests/TestData.targets`)
 rather than a seventh project.
+
+### How payloads are compared
+
+`TestCaseJson.AssertMatches` walks both payloads as JSON and reports **every** difference by path, then
+prints both payloads in full. Property order is normalized (so ordering never matters) but array order
+is significant, and comparison is case-sensitive — the domain builders normalize casing, so a casing
+regression has to fail.
+
+```
+Processed domain payload for test_case_2_hashtags.json does not match the expected payload.
+
+3 differences:
+  engagementScore: expected 20 but was 15
+  hashtags[1]: expected "dotnet" but was "netcore"
+  shares: expected 5 but was 4
+
+expected:
+{ … full payload, camelCase, indented … }
+actual:
+{ … }
+```
+
+It replaced an `Assert.Equal` over canonical JSON strings, which reported only the first differing
+*character* in a truncated one-line window with no field name, and printed PascalCase that didn't match
+the fixtures. The comparison has its own tests (`Processor.MockTests/TestCaseJsonTests.cs`) — if it
+failed to spot a difference, every payload assertion in both e2e suites would pass vacuously.
 
 ---
 
