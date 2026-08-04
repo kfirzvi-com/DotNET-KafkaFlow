@@ -7,19 +7,19 @@ namespace Processor.HostE2ETests.Support;
 /// Runs the same JSON test cases as the mock suite, but through the deployed article: a message is
 /// produced to a real Kafka topic, consumed by the real host whose settings come from Oracle, and the
 /// result is read back off the real output or dead-letter topic.
+/// <para>
+/// Assertions are watermarked rather than timed — see <see cref="Watermark{TInput,TDomainData}"/>.
+/// There is no fixed wait anywhere in this runner.
+/// </para>
 /// </summary>
 public static class E2ETestCaseRunner
 {
-    private static readonly TimeSpan ProduceTimeout = TimeSpan.FromSeconds(30);
-
-    /// <summary>Long enough that a message *would* have arrived if the processor were going to emit one.</summary>
-    private static readonly TimeSpan QuietPeriod = TimeSpan.FromSeconds(8);
-
     public static async Task RunAsync<TInput, TDomainData>(
         InfrastructureFixture infrastructure,
         string domain,
         string fileName,
-        string fileContent)
+        string fileContent,
+        Func<string, string, TInput> messageFactory)
         where TInput : InputMessage<TDomainData>
         where TDomainData : class, IDomainData, new()
     {
@@ -30,21 +30,28 @@ public static class E2ETestCaseRunner
         var topics = HostUnderTest.TopicsFor(domain, discriminator);
         await infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
 
-        // Oracle holds only what this case declares, so unknown/inactive data types are genuinely
-        // unknown/inactive in the database.
-        await infrastructure.SeedSettingsAsync(domain, SettingsFor(testCase));
+        // Oracle holds only what this case declares plus the watermark's own row, so unknown/inactive
+        // data types are genuinely unknown/inactive in the database.
+        await Watermark<TInput, TDomainData>.SeedAsync(infrastructure, domain, SettingsFor(testCase));
 
         await using var host = HostUnderTest.Create(infrastructure, domain, topics);
         await host.StartAsync();
 
         using var kafka = new KafkaClient(infrastructure.BootstrapServers);
+        var watermark = new Watermark<TInput, TDomainData>(messageFactory);
+
         await kafka.ProduceAsync(topics.Input, testCase.Input!, testCase.DataTypeId);
+        // Produced after the message under test, so both markers sit behind it in the partition.
+        await watermark.ProduceAsync(kafka, topics.Input);
+
+        var produced = watermark.ReadOutput(kafka, topics.Output);
+        var deadLettered = watermark.ReadDeadLetters(kafka, topics.DeadLetter);
 
         switch (testCase.ExpectedOutcome.ToLowerInvariant())
         {
             case TestOutcomes.Output:
             {
-                var produced = kafka.Consume<OutputMessage<TDomainData>>(topics.Output, 1, ProduceTimeout);
+                Assert.Empty(deadLettered);
                 var message = Assert.Single(produced);
 
                 var expected = testCase.ExpectedOutput!;
@@ -67,14 +74,12 @@ public static class E2ETestCaseRunner
                         TestCaseJson.Canonical(message.DomainData));
                 }
 
-                kafka.AssertEmpty(topics.DeadLetter, QuietPeriod);
                 break;
             }
 
             case TestOutcomes.DeadLetter:
             {
-                var deadLettered = kafka.Consume<DeadLetterMessage<TDomainData>>(
-                    topics.DeadLetter, 1, ProduceTimeout);
+                Assert.Empty(produced);
                 var message = Assert.Single(deadLettered);
 
                 Assert.Equal(testCase.ExpectedDeadLetterReason, message.Reason);
@@ -84,15 +89,15 @@ public static class E2ETestCaseRunner
                     TestCaseJson.Canonical(testCase.Input!.DomainData),
                     TestCaseJson.Canonical(message.OriginalMessage.DomainData));
 
-                kafka.AssertEmpty(topics.Output, QuietPeriod);
                 break;
             }
 
             case TestOutcomes.Dropped:
             case TestOutcomes.Filtered:
-                // Both outcomes commit the offset and produce nothing anywhere.
-                kafka.AssertEmpty(topics.Output, QuietPeriod);
-                kafka.AssertEmpty(topics.DeadLetter, TimeSpan.FromSeconds(2));
+                // Both outcomes commit the offset and produce nothing anywhere. Because the watermark
+                // has already been observed on both topics, these are exact assertions.
+                Assert.Empty(produced);
+                Assert.Empty(deadLettered);
                 break;
         }
     }

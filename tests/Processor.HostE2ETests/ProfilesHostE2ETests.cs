@@ -16,5 +16,5 @@ public class ProfilesHostE2ETests
     [MemberData(nameof(TestCaseLoader.Profiles), MemberType = typeof(TestCaseLoader))]
     public Task RunsTestCase(string fileName, string fileContent) =>
         E2ETestCaseRunner.RunAsync<ProfileInputMessage, ProfileData>(
-            _infrastructure, ProfileData.Domain, fileName, fileContent);
+            _infrastructure, ProfileData.Domain, fileName, fileContent, WatermarkFactories.Profile);
 }

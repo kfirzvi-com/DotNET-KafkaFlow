@@ -16,5 +16,5 @@ public class PostsHostE2ETests
     [MemberData(nameof(TestCaseLoader.Posts), MemberType = typeof(TestCaseLoader))]
     public Task RunsTestCase(string fileName, string fileContent) =>
         E2ETestCaseRunner.RunAsync<PostInputMessage, PostData>(
-            _infrastructure, PostData.Domain, fileName, fileContent);
+            _infrastructure, PostData.Domain, fileName, fileContent, WatermarkFactories.Post);
 }

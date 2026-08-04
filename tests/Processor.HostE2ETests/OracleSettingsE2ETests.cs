@@ -6,6 +6,8 @@ using Processor.Core.DataTypes;
 using Processor.Core.Messages;
 using Processor.Domains.Posts;
 using Processor.HostE2ETests.Support;
+using PostWatermark = Processor.HostE2ETests.Support.Watermark<
+    Processor.Domains.Posts.PostInputMessage, Processor.Domains.Posts.PostData>;
 
 namespace Processor.HostE2ETests;
 
@@ -17,8 +19,8 @@ namespace Processor.HostE2ETests;
 [Collection(InfrastructureCollection.Name)]
 public class OracleSettingsE2ETests
 {
+    /// <summary>Failure guard on reads that expect a message, not an expected wait.</summary>
     private static readonly TimeSpan ProduceTimeout = TimeSpan.FromSeconds(30);
-    private static readonly TimeSpan QuietPeriod = TimeSpan.FromSeconds(8);
 
     private readonly InfrastructureFixture _infrastructure;
 
@@ -75,7 +77,7 @@ public class OracleSettingsE2ETests
     [Fact]
     public async Task InactiveDataTypeInOracle_FiltersTheMessage()
     {
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("retired", false));
+        await PostWatermark.SeedAsync(_infrastructure, PostData.Domain, ("retired", false));
 
         var topics = HostUnderTest.TopicsFor(PostData.Domain, "inactive");
         await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
@@ -84,16 +86,20 @@ public class OracleSettingsE2ETests
         await host.StartAsync();
 
         using var kafka = new KafkaClient(_infrastructure.BootstrapServers);
-        await kafka.ProduceAsync(topics.Input, Post("post-inactive"), "retired");
+        var watermark = new PostWatermark(WatermarkFactories.Post);
 
-        kafka.AssertEmpty(topics.Output, QuietPeriod);
-        kafka.AssertEmpty(topics.DeadLetter, TimeSpan.FromSeconds(2));
+        await kafka.ProduceAsync(topics.Input, Post("post-inactive"), "retired");
+        await watermark.ProduceAsync(kafka, topics.Input);
+
+        // Watermarked, so these are exact: the processor has passed the filtered message.
+        Assert.Empty(watermark.ReadOutput(kafka, topics.Output));
+        Assert.Empty(watermark.ReadDeadLetters(kafka, topics.DeadLetter));
     }
 
     [Fact]
     public async Task ActivatingADataTypeInOracle_TakesEffectAfterARefresh()
     {
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("toggled", false));
+        await PostWatermark.SeedAsync(_infrastructure, PostData.Domain, ("toggled", false));
 
         var topics = HostUnderTest.TopicsFor(PostData.Domain, "toggle");
         await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
@@ -103,19 +109,23 @@ public class OracleSettingsE2ETests
 
         using var kafka = new KafkaClient(_infrastructure.BootstrapServers);
 
-        // Inactive: filtered.
+        // Inactive: filtered. A watermark proves it was passed over rather than merely slow.
+        var firstPass = new PostWatermark(WatermarkFactories.Post);
         await kafka.ProduceAsync(topics.Input, Post("before"), "toggled");
-        kafka.AssertEmpty(topics.Output, QuietPeriod);
+        await firstPass.ProduceAsync(kafka, topics.Input);
+        Assert.Empty(firstPass.ReadOutput(kafka, topics.Output));
 
         // Flip the row in Oracle and force the reload the timer would do.
         await _infrastructure.SetActiveAsync(PostData.Domain, "toggled", isActive: true);
         Assert.True(await host.RefreshSettingsAsync());
 
+        // A second watermark bounds the read: everything up to it, which now includes "after".
+        var secondPass = new PostWatermark(WatermarkFactories.Post);
         await kafka.ProduceAsync(topics.Input, Post("after"), "toggled");
+        await secondPass.ProduceAsync(kafka, topics.Input);
 
-        var produced = kafka.Consume<OutputMessage<PostData>>(topics.Output, 1, ProduceTimeout);
-        var message = Assert.Single(produced);
-        Assert.Equal("after", message.Id);
+        // The first watermark's own output message is on this topic too, so match the one under test.
+        Assert.Contains(secondPass.ReadOutput(kafka, topics.Output), m => m.Id == "after");
     }
 
     [Fact]

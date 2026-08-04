@@ -63,7 +63,10 @@ public sealed class HostUnderTest : IAsyncDisposable
             [$"{KafkaOptions.SectionName}:{nameof(KafkaOptions.OutputTopic)}"] = topics.Output,
             [$"{KafkaOptions.SectionName}:{nameof(KafkaOptions.DeadLetterTopic)}"] = topics.DeadLetter,
             [$"{KafkaOptions.SectionName}:{nameof(KafkaOptions.ConsumerGroupId)}"] = topics.ConsumerGroup,
-            [$"{KafkaOptions.SectionName}:{nameof(KafkaOptions.WorkersCount)}"] = "2",
+            // A single worker so messages are processed in partition order. The watermark assertions
+            // depend on it: a marker produced after the message under test must also be *handled*
+            // after it. Concurrency is a throughput concern and is tuned by the load tests, not here.
+            [$"{KafkaOptions.SectionName}:{nameof(KafkaOptions.WorkersCount)}"] = "1",
             [$"{KafkaOptions.SectionName}:{nameof(KafkaOptions.BufferSize)}"] = "10",
             // AutoOffsetReset is deliberately NOT set: leaving it at the production default (earliest)
             // means this suite proves that default is what makes message delivery deterministic rather

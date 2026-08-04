@@ -429,6 +429,22 @@ failure names the file.
 
 A malformed or internally inconsistent case **fails loudly** rather than passing silently.
 
+### Why the end-to-end suite is fast
+
+Asserting "nothing was produced" against a real broker invites a fixed wait, and a fixed wait per case
+is what makes an integration suite slow — the original version sat out 8 seconds per test.
+
+Instead, each case produces two **watermark** messages after the message under test: one that reaches
+the output topic and one that dead-letters (an empty id, which the shared id rule rejects for every
+domain). Reads run *until the watermark*, so once it is observed the processor has demonstrably
+finished with everything ahead of it and an empty result is a fact rather than the absence of evidence.
+There is no fixed wait anywhere in the suite — 30 tests against real Kafka and Oracle run in ~20s.
+
+This is why the hosts under test run a **single worker**: the watermark must be *handled* after the
+message under test, not merely produced after it. Concurrency is a throughput concern, covered by the
+load tests rather than here. A broken consumer fails with an explicit "the watermark never arrived"
+timeout instead of silently passing an emptiness assertion.
+
 The test-case model and loader are shared source (`tests/Shared/`, linked via `tests/TestData.targets`)
 rather than a seventh project.
 
