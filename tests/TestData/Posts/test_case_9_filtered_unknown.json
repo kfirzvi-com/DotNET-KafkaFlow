@@ -1,6 +1,19 @@
 {
   "dataTypeId": "never-configured",
-  "dataTypeRegistered": false,
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "engagement",
+      "isActive": true
+    },
+    {
+      "dataTypeId": "backfill",
+      "isActive": true
+    },
+    {
+      "dataTypeId": "retired-feed",
+      "isActive": false
+    }
+  ],
   "input": {
     "id": "post-009",
     "content": "from an unknown feed",

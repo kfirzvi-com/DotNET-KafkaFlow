@@ -1,6 +1,15 @@
 {
   "dataTypeId": "retired-directory",
-  "dataTypeActive": false,
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "directory",
+      "isActive": true
+    },
+    {
+      "dataTypeId": "retired-directory",
+      "isActive": false
+    }
+  ],
   "input": {
     "id": "profile-009",
     "content": "from a retired directory",

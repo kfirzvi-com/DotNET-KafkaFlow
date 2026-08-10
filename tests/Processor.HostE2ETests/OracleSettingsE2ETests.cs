@@ -15,6 +15,9 @@ namespace Processor.HostE2ETests;
 /// The Oracle-specific behaviour that only a real database can prove: the SQL and column mapping, the
 /// per-domain row scoping, live settings changes picked up by a refresh, and fail-fast startup when the
 /// database is unreachable.
+/// <para>
+/// Every test creates its own settings table, so no test can see or clobber another's rows.
+/// </para>
 /// </summary>
 [Collection(InfrastructureCollection.Name)]
 public class OracleSettingsE2ETests
@@ -34,15 +37,23 @@ public class OracleSettingsE2ETests
         DomainData = new PostData { AuthorHandle = "ada", Network = "x", Likes = 2, Shares = 1 }
     };
 
+    /// <summary>Creates this test's own topics and settings table.</summary>
+    private async Task<(HostUnderTest.TopicSet Topics, SettingsTable Settings)> ScaffoldAsync(
+        string discriminator, string domain = PostData.Domain)
+    {
+        var topics = HostUnderTest.TopicsFor(domain, discriminator);
+        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
+        var settings = await _infrastructure.CreateSettingsTableAsync(discriminator);
+        return (topics, settings);
+    }
+
     [Fact]
     public async Task OracleStore_LoadsSettings_AndMapsNumberOneToActive()
     {
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("active-feed", true), ("dormant-feed", false));
+        var (topics, settings) = await ScaffoldAsync("oracle-load");
+        await settings.SeedAsync(PostData.Domain, ("active-feed", true), ("dormant-feed", false));
 
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "oracle-load");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
-
-        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics);
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
         await host.StartAsync();
 
         var repository = host.Services.GetRequiredService<IDataTypeSettingsRepository>();
@@ -57,14 +68,12 @@ public class OracleSettingsE2ETests
     [Fact]
     public async Task Settings_AreScopedToTheDeploymentsDomain()
     {
-        // The same table holds both domains' rows; only the posts rows may reach a posts deployment.
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("posts-only", true));
-        await _infrastructure.SeedSettingsAsync("profiles", ("profiles-only", true));
+        // One table holding both domains' rows; only the posts rows may reach a posts deployment.
+        var (topics, settings) = await ScaffoldAsync("domain-scope");
+        await settings.SeedAsync(PostData.Domain, ("posts-only", true));
+        await settings.SeedAsync("profiles", ("profiles-only", true));
 
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "domain-scope");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
-
-        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics);
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
         await host.StartAsync();
 
         var repository = host.Services.GetRequiredService<IDataTypeSettingsRepository>();
@@ -72,17 +81,18 @@ public class OracleSettingsE2ETests
         Assert.NotNull(await repository.FindByIdAsync("posts-only"));
         Assert.Null(await repository.FindByIdAsync("profiles-only"));
         Assert.Single(await repository.FindAllAsync());
+
+        // Both rows really are in the table — the filtering is the query's doing, not the seed's.
+        Assert.Equal(2, (await settings.ReadAllAsync()).Count);
     }
 
     [Fact]
     public async Task InactiveDataTypeInOracle_FiltersTheMessage()
     {
-        await PostWatermark.SeedAsync(_infrastructure, PostData.Domain, ("retired", false));
+        var (topics, settings) = await ScaffoldAsync("inactive");
+        await PostWatermark.SeedAsync(settings, PostData.Domain, ("retired", false));
 
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "inactive");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
-
-        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics);
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
         await host.StartAsync();
 
         using var kafka = new KafkaClient(_infrastructure.BootstrapServers);
@@ -99,12 +109,10 @@ public class OracleSettingsE2ETests
     [Fact]
     public async Task ActivatingADataTypeInOracle_TakesEffectAfterARefresh()
     {
-        await PostWatermark.SeedAsync(_infrastructure, PostData.Domain, ("toggled", false));
+        var (topics, settings) = await ScaffoldAsync("toggle");
+        await PostWatermark.SeedAsync(settings, PostData.Domain, ("toggled", false));
 
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "toggle");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
-
-        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics);
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
         await host.StartAsync();
 
         using var kafka = new KafkaClient(_infrastructure.BootstrapServers);
@@ -116,7 +124,7 @@ public class OracleSettingsE2ETests
         Assert.Empty(firstPass.ReadOutput(kafka, topics.Output));
 
         // Flip the row in Oracle and force the reload the timer would do.
-        await _infrastructure.SetActiveAsync(PostData.Domain, "toggled", isActive: true);
+        await settings.SetActiveAsync(PostData.Domain, "toggled", isActive: true);
         Assert.True(await host.RefreshSettingsAsync());
 
         // A second watermark bounds the read: everything up to it, which now includes "after".
@@ -129,14 +137,40 @@ public class OracleSettingsE2ETests
     }
 
     [Fact]
+    public async Task DeactivatingADataTypeInOracle_TakesEffectAfterARefresh()
+    {
+        var (topics, settings) = await ScaffoldAsync("untoggle");
+        await PostWatermark.SeedAsync(settings, PostData.Domain, ("live-feed", true));
+
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
+        await host.StartAsync();
+
+        using var kafka = new KafkaClient(_infrastructure.BootstrapServers);
+
+        // Active: processed.
+        var firstPass = new PostWatermark(WatermarkFactories.Post);
+        await kafka.ProduceAsync(topics.Input, Post("while-active"), "live-feed");
+        await firstPass.ProduceAsync(kafka, topics.Input);
+        Assert.Contains(firstPass.ReadOutput(kafka, topics.Output), m => m.Id == "while-active");
+
+        await settings.SetActiveAsync(PostData.Domain, "live-feed", isActive: false);
+        Assert.True(await host.RefreshSettingsAsync());
+
+        var secondPass = new PostWatermark(WatermarkFactories.Post);
+        await kafka.ProduceAsync(topics.Input, Post("while-inactive"), "live-feed");
+        await secondPass.ProduceAsync(kafka, topics.Input);
+
+        // Now filtered: nothing new beyond what the earlier pass already produced.
+        Assert.DoesNotContain(secondPass.ReadOutput(kafka, topics.Output), m => m.Id == "while-inactive");
+    }
+
+    [Fact]
     public async Task DataTypeId_IsAcceptedFromTheKafkaHeader()
     {
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("header-feed", true));
+        var (topics, settings) = await ScaffoldAsync("header");
+        await settings.SeedAsync(PostData.Domain, ("header-feed", true));
 
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "header");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
-
-        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics);
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
         await host.StartAsync();
 
         using var kafka = new KafkaClient(_infrastructure.BootstrapServers);
@@ -149,12 +183,10 @@ public class OracleSettingsE2ETests
     [Fact]
     public async Task Readiness_IsHealthy_OnceOracleIsLoaded()
     {
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("ready-feed", true));
+        var (topics, settings) = await ScaffoldAsync("ready");
+        await settings.SeedAsync(PostData.Domain, ("ready-feed", true));
 
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "ready");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
-
-        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics);
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
         await host.StartAsync();
 
         Assert.Equal(HealthStatus.Healthy, await host.ReadinessAsync());
@@ -163,11 +195,10 @@ public class OracleSettingsE2ETests
     [Fact]
     public async Task Startup_Fails_WhenOracleIsUnreachable()
     {
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "oracle-down");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
+        var (topics, settings) = await ScaffoldAsync("oracle-down");
 
         await using var host = HostUnderTest.Create(
-            _infrastructure, PostData.Domain, topics,
+            _infrastructure, PostData.Domain, topics, settings,
             new Dictionary<string, string?>
             {
                 // A port nothing listens on: every startup attempt must fail.
@@ -183,11 +214,10 @@ public class OracleSettingsE2ETests
     [Fact]
     public async Task Startup_Fails_WhenTheSettingsTableDoesNotExist()
     {
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "no-table");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
+        var (topics, settings) = await ScaffoldAsync("no-table");
 
         await using var host = HostUnderTest.Create(
-            _infrastructure, PostData.Domain, topics,
+            _infrastructure, PostData.Domain, topics, settings,
             new Dictionary<string, string?>
             {
                 ["Oracle:SettingsTable"] = "NO_SUCH_TABLE",
@@ -198,14 +228,25 @@ public class OracleSettingsE2ETests
     }
 
     [Fact]
+    public async Task Startup_Succeeds_WhenTheSettingsTableIsEmpty()
+    {
+        // An empty table is a valid state — everything filters as unknown — not a startup failure.
+        var (topics, settings) = await ScaffoldAsync("empty-table");
+
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
+        await host.StartAsync();
+
+        Assert.Equal(HealthStatus.Healthy, await host.ReadinessAsync());
+        Assert.Empty(await host.Services.GetRequiredService<IDataTypeSettingsRepository>().FindAllAsync());
+    }
+
+    [Fact]
     public async Task OracleOutage_AfterStartup_DoesNotStopProcessing()
     {
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("resilient", true));
+        var (topics, settings) = await ScaffoldAsync("outage");
+        await settings.SeedAsync(PostData.Domain, ("resilient", true));
 
-        var topics = HostUnderTest.TopicsFor(PostData.Domain, "outage");
-        await _infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
-
-        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics);
+        await using var host = HostUnderTest.Create(_infrastructure, PostData.Domain, topics, settings);
         await host.StartAsync();
 
         // Deleting every row is the database-side equivalent of the settings vanishing. The snapshot
@@ -214,7 +255,7 @@ public class OracleSettingsE2ETests
         {
             await connection.OpenAsync();
             await connection.ExecuteAsync(
-                $"DELETE FROM {InfrastructureFixture.SettingsTable} WHERE DOMAIN_NAME = :domain",
+                $"DELETE FROM {settings.Name} WHERE DOMAIN_NAME = :domain",
                 new { domain = PostData.Domain });
         }
 
@@ -228,18 +269,22 @@ public class OracleSettingsE2ETests
     [Fact]
     public async Task BothDomains_ProcessTheirOwnMessages_FromTheSameCodeAndTable()
     {
-        await _infrastructure.SeedSettingsAsync(PostData.Domain, ("engagement", true));
-        await _infrastructure.SeedSettingsAsync("profiles", ("directory", true));
-
+        // One shared table for both deployments, to show the domain column is what separates them.
         var postsTopics = HostUnderTest.TopicsFor(PostData.Domain, "both-posts");
         var profilesTopics = HostUnderTest.TopicsFor("profiles", "both-profiles");
         await _infrastructure.CreateTopicsAsync(
             postsTopics.Input, postsTopics.Output, postsTopics.DeadLetter,
             profilesTopics.Input, profilesTopics.Output, profilesTopics.DeadLetter);
 
+        var shared = await _infrastructure.CreateSettingsTableAsync("both-domains");
+        await shared.SeedAsync(PostData.Domain, ("engagement", true));
+        await shared.SeedAsync("profiles", ("directory", true));
+
         // Two deployments of the same image, differing only in Processor:Domain.
-        await using var postsHost = HostUnderTest.Create(_infrastructure, PostData.Domain, postsTopics);
-        await using var profilesHost = HostUnderTest.Create(_infrastructure, "profiles", profilesTopics);
+        await using var postsHost = HostUnderTest.Create(
+            _infrastructure, PostData.Domain, postsTopics, shared);
+        await using var profilesHost = HostUnderTest.Create(
+            _infrastructure, "profiles", profilesTopics, shared);
         await postsHost.StartAsync();
         await profilesHost.StartAsync();
 

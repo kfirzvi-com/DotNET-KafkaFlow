@@ -1,5 +1,11 @@
 {
   "dataTypeId": null,
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "engagement",
+      "isActive": true
+    }
+  ],
   "input": {
     "id": "post-010",
     "content": "no data type id at all",

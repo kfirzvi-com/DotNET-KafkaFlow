@@ -23,13 +23,18 @@ public class ProcessorTestCase<TInput, TDomainData>
     public string? DataTypeId { get; set; }
 
     /// <summary>
-    /// Whether the settings store has a row for <see cref="DataTypeId"/>. False exercises the
-    /// <c>unknown_data_type</c> filter.
+    /// The complete contents of the settings store for this case — every data type the processor should
+    /// see, and whether each is active. Each case owns its own store (a dedicated Oracle table in the
+    /// host suite, a dedicated in-memory store in the mock suite), so these never collide with another
+    /// case's.
+    /// <para>
+    /// A case exercises the filter outcomes purely through this list: omit
+    /// <see cref="DataTypeId"/> from it for <c>unknown_data_type</c>, include it with
+    /// <c>isActive: false</c> for <c>inactive_data_type</c>. Listing unrelated data types alongside is
+    /// meaningful too — it proves the processor selects by id rather than taking whatever is present.
+    /// </para>
     /// </summary>
-    public bool DataTypeRegistered { get; set; } = true;
-
-    /// <summary>Whether that row is active. False exercises the <c>inactive_data_type</c> filter.</summary>
-    public bool DataTypeActive { get; set; } = true;
+    public List<DataTypeSettingFixture> DataTypeSettings { get; set; } = new();
 
     public TInput? Input { get; set; }
 
@@ -43,6 +48,34 @@ public class ProcessorTestCase<TInput, TDomainData>
     public string? ExpectedDropReason { get; set; }
 
     public string? ExpectedFilterReason { get; set; }
+
+    /// <summary>The setting for <paramref name="dataTypeId"/>, or null when the case does not declare one.</summary>
+    public DataTypeSettingFixture? SettingFor(string? dataTypeId) =>
+        dataTypeId is null
+            ? null
+            : DataTypeSettings.FirstOrDefault(
+                s => string.Equals(s.DataTypeId, dataTypeId, StringComparison.OrdinalIgnoreCase));
+}
+
+/// <summary>
+/// One row of a case's settings store: a data type id and whether it is active. Mirrors
+/// <c>DATA_TYPE_SETTINGS</c> without depending on the production type, so the fixture format stays a
+/// test concern.
+/// </summary>
+public class DataTypeSettingFixture
+{
+    public string DataTypeId { get; set; } = string.Empty;
+
+    /// <summary>Defaults to true: a listed data type is normally one the processor should accept.</summary>
+    public bool IsActive { get; set; } = true;
+}
+
+/// <summary>The bounded filter reason codes a case can expect.</summary>
+public static class FilterReasons
+{
+    public const string MissingDataTypeId = "missing_data_type_id";
+    public const string UnknownDataType = "unknown_data_type";
+    public const string InactiveDataType = "inactive_data_type";
 }
 
 /// <summary>
@@ -129,7 +162,86 @@ public static class TestCaseJson
                 throw new InvalidOperationException($"{fileName}: unknown expected outcome '{outcome}'.");
         }
 
+        ValidateDataTypeSettings(fileName, testCase, outcome);
+
         return testCase;
+    }
+
+    /// <summary>
+    /// Checks a case's settings list against the outcome it expects. Without this a fixture could
+    /// silently test something other than what it claims — forgetting to list a data type would turn an
+    /// "output" case into an unnoticed <c>unknown_data_type</c> filter that still passed its assertions
+    /// (nothing produced, nothing dead-lettered) for entirely the wrong reason.
+    /// </summary>
+    private static void ValidateDataTypeSettings<TInput, TDomainData>(
+        string fileName, ProcessorTestCase<TInput, TDomainData> testCase, string outcome)
+        where TInput : InputMessage<TDomainData>
+        where TDomainData : class, IDomainData, new()
+    {
+        var settings = testCase.DataTypeSettings;
+
+        if (settings.Any(s => string.IsNullOrWhiteSpace(s.DataTypeId)))
+        {
+            throw new InvalidOperationException(
+                $"{fileName}: 'dataTypeSettings' contains an entry with a blank 'dataTypeId'.");
+        }
+
+        var duplicates = settings
+            .GroupBy(s => s.DataTypeId, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToList();
+
+        if (duplicates.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"{fileName}: 'dataTypeSettings' lists {string.Join(", ", duplicates)} more than once; " +
+                "the store is keyed by data type id, so a duplicate has no defined meaning.");
+        }
+
+        var setting = testCase.SettingFor(testCase.DataTypeId);
+
+        // Anything that got past the filter must have had an active data type to get there.
+        if (outcome is TestOutcomes.Output or TestOutcomes.DeadLetter or TestOutcomes.Dropped)
+        {
+            if (testCase.DataTypeId is null)
+            {
+                throw new InvalidOperationException(
+                    $"{fileName}: outcome '{outcome}' requires a 'dataTypeId' — a message without one is filtered.");
+            }
+
+            if (setting is null || !setting.IsActive)
+            {
+                throw new InvalidOperationException(
+                    $"{fileName}: outcome '{outcome}' requires 'dataTypeSettings' to list '{testCase.DataTypeId}' " +
+                    $"as active, otherwise the message is filtered before it can be {outcome}.");
+            }
+
+            return;
+        }
+
+        // Filtered cases: the settings must actually produce the reason claimed.
+        switch (testCase.ExpectedFilterReason)
+        {
+            case FilterReasons.MissingDataTypeId when testCase.DataTypeId is not null:
+                throw new InvalidOperationException(
+                    $"{fileName}: '{FilterReasons.MissingDataTypeId}' requires 'dataTypeId' to be null.");
+
+            case FilterReasons.UnknownDataType when setting is not null:
+                throw new InvalidOperationException(
+                    $"{fileName}: '{FilterReasons.UnknownDataType}' requires 'dataTypeSettings' NOT to list " +
+                    $"'{testCase.DataTypeId}'.");
+
+            case FilterReasons.InactiveDataType when setting is null:
+                throw new InvalidOperationException(
+                    $"{fileName}: '{FilterReasons.InactiveDataType}' requires 'dataTypeSettings' to list " +
+                    $"'{testCase.DataTypeId}' with 'isActive': false.");
+
+            case FilterReasons.InactiveDataType when setting.IsActive:
+                throw new InvalidOperationException(
+                    $"{fileName}: '{FilterReasons.InactiveDataType}' requires '{testCase.DataTypeId}' to be " +
+                    "inactive, but it is listed as active.");
+        }
     }
 
     /// <summary>

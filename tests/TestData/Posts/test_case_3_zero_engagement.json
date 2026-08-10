@@ -1,5 +1,11 @@
 {
   "dataTypeId": "engagement",
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "engagement",
+      "isActive": true
+    }
+  ],
   "input": {
     "id": "post-003",
     "content": "a quiet post",

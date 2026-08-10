@@ -1,5 +1,11 @@
 {
   "dataTypeId": "directory",
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "directory",
+      "isActive": true
+    }
+  ],
   "input": {
     "id": "profile-007",
     "content": "brand new account",

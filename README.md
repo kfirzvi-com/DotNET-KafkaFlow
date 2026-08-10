@@ -401,6 +401,10 @@ failure names the file.
 ```json
 {
   "dataTypeId": "engagement",
+  "dataTypeSettings": [
+    { "dataTypeId": "engagement", "isActive": true },
+    { "dataTypeId": "retired-feed", "isActive": false }
+  ],
   "input": {
     "id": "post-002",
     "content": "shipping #KafkaFlow with #dotnet",
@@ -420,14 +424,44 @@ failure names the file.
 
 | Field | Purpose |
 |---|---|
-| `dataTypeId` | Sent as the Kafka key. `null` exercises `missing_data_type_id`. |
-| `dataTypeRegistered` | `false` → no settings row, exercising `unknown_data_type`. |
-| `dataTypeActive` | `false` → an inactive row, exercising `inactive_data_type`. |
+| `dataTypeId` | Sent as the Kafka key. `null` means no key and no header. |
+| `dataTypeSettings` | **The complete settings store for this case** — every data type the processor should see, and whether each is active. `isActive` defaults to `true`. |
 | `expectedOutcome` | `output` \| `deadletter` \| `dropped` \| `filtered`. |
 | `expectedOutput` | Asserted fields, including the processed `domainData` (structurally compared — see below). `processedAt` and `processorName` are environment-dependent and deliberately not asserted. |
 | `expectedDeadLetterReason` / `expectedDropReason` / `expectedFilterReason` | Required for their outcome. |
 
-A malformed or internally inconsistent case **fails loudly** rather than passing silently.
+### Per-case settings, and why they can't collide
+
+Each case declares the store's entire contents, and each case gets its **own store**:
+
+- **Mock suite** — its own `InMemoryDataTypeSettingsStore` instance per case.
+- **Host suite** — its own **Oracle table**, created fresh and empty for that case. Since
+  `Oracle:SettingsTable` is configurable, the host under test is simply pointed at it. No case can read,
+  overwrite, or delete another's rows, and the suite stays correct if it is ever run in parallel.
+
+The three filter outcomes therefore fall out of the list itself rather than from flags:
+
+| To exercise | Declare |
+|---|---|
+| `missing_data_type_id` | `dataTypeId: null` (settings may still be present — they're irrelevant) |
+| `unknown_data_type` | a list that does **not** contain `dataTypeId` — ideally with *other* active types, which proves selection is by id rather than "whatever is present" |
+| `inactive_data_type` | `dataTypeId` listed with `isActive: false`, ideally beside an active sibling |
+
+Because the list is the whole store, a case can also assert something the old boolean flags couldn't
+express: that an active data type is still selected correctly when inactive decoys sit alongside it.
+
+A malformed or internally inconsistent case **fails loudly at parse time** rather than passing
+silently. That check earns its keep — omitting a data type from an `output` case would otherwise turn it
+into an unnoticed `unknown_data_type` filter whose assertions ("nothing produced, nothing
+dead-lettered") still hold, for entirely the wrong reason. Instead:
+
+```
+test_case_3_zero_engagement.json: outcome 'output' requires 'dataTypeSettings' to list
+'engagement' as active, otherwise the message is filtered before it can be output.
+```
+
+The rules — duplicates, blank ids, and each filter reason matching the settings that would actually
+cause it — are themselves tested in `Processor.MockTests/TestCaseValidationTests.cs`.
 
 ### Why the end-to-end suite is fast
 

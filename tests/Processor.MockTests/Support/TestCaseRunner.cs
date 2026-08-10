@@ -53,26 +53,18 @@ public static class TestCaseRunner
     }
 
     /// <summary>
-    /// Seeds the settings store to match the case: a registered data type (active or not), or nothing
-    /// at all when the case exercises an unknown/missing data type.
+    /// The store contents for this case, exactly as its <c>dataTypeSettings</c> declares them. Every
+    /// case gets its own <c>InMemoryDataTypeSettingsStore</c> instance, so no case can see or disturb
+    /// another's settings.
     /// </summary>
     private static List<DataTypeSetting> SettingsFor<TInput, TDomainData>(
         ProcessorTestCase<TInput, TDomainData> testCase)
         where TInput : InputMessage<TDomainData>
         where TDomainData : class, IDomainData, new()
     {
-        var settings = new List<DataTypeSetting>();
-
-        if (testCase.DataTypeId is not null && testCase.DataTypeRegistered)
-        {
-            settings.Add(new DataTypeSetting
-            {
-                DataTypeId = testCase.DataTypeId,
-                IsActive = testCase.DataTypeActive
-            });
-        }
-
-        return settings;
+        return testCase.DataTypeSettings
+            .Select(s => new DataTypeSetting { DataTypeId = s.DataTypeId, IsActive = s.IsActive })
+            .ToList();
     }
 
     private static void AssertProducedToOutput<TInput, TDomainData>(

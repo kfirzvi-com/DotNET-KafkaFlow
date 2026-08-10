@@ -1,8 +1,6 @@
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
-using Dapper;
 using DotNet.Testcontainers.Builders;
-using Oracle.ManagedDataAccess.Client;
 using Testcontainers.Kafka;
 using Testcontainers.Oracle;
 
@@ -10,22 +8,15 @@ namespace Processor.HostE2ETests.Support;
 
 /// <summary>
 /// Real infrastructure for the end-to-end suite: a Kafka broker and an Oracle database, both in
-/// containers, shared by every test in the collection (Oracle takes minutes to boot, so starting it per
+/// containers, shared by every test in the collection (Oracle takes a while to boot, so starting it per
 /// test is not viable).
 /// <para>
-/// Oracle is set up the way the deployment expects it: a schema with the settings table, populated with
-/// per-domain rows.
+/// What is <em>not</em> shared is per-test state: each test asks for its own topics and its own
+/// <see cref="SettingsTable"/>, so cases cannot collide over data type settings.
 /// </para>
 /// </summary>
 public sealed class InfrastructureFixture : IAsyncLifetime
 {
-    /// <summary>The settings table, matching <c>Oracle:SettingsTable</c>.</summary>
-    public const string SettingsTable = "DATA_TYPE_SETTINGS";
-
-    private readonly KafkaContainer _kafka = new KafkaBuilder()
-        .WithImage("confluentinc/cp-kafka:7.8.0")
-        .Build();
-
     /// <summary>Application schema the processor connects as — mirrors the compose setup.</summary>
     private const string AppUser = "processor";
 
@@ -36,6 +27,13 @@ public sealed class InfrastructureFixture : IAsyncLifetime
     /// connection string assumes the older XE image's <c>XEPDB1</c>, so it cannot be used as-is here.
     /// </summary>
     private const string ServiceName = "FREEPDB1";
+
+    /// <summary>Numbers the per-test tables so their names are unique and short enough for Oracle.</summary>
+    private int _tableSequence;
+
+    private readonly KafkaContainer _kafka = new KafkaBuilder()
+        .WithImage("confluentinc/cp-kafka:7.8.0")
+        .Build();
 
     private readonly OracleContainer _oracle = new OracleBuilder()
         .WithImage("gvenzl/oracle-free:23.5-slim-faststart")
@@ -53,7 +51,6 @@ public sealed class InfrastructureFixture : IAsyncLifetime
     {
         // Both are slow and independent, so start them together.
         await Task.WhenAll(_kafka.StartAsync(), _oracle.StartAsync());
-        await CreateSettingsTableAsync();
     }
 
     public async Task DisposeAsync()
@@ -69,59 +66,16 @@ public sealed class InfrastructureFixture : IAsyncLifetime
         $"User Id={AppUser};Password={AppPassword};" +
         $"Data Source={_oracle.Hostname}:{_oracle.GetMappedPublicPort(1521)}/{ServiceName}";
 
-    private async Task CreateSettingsTableAsync()
+    /// <summary>
+    /// Creates a settings table owned by one test. <paramref name="discriminator"/> only makes the name
+    /// readable; uniqueness comes from a per-run sequence number.
+    /// </summary>
+    public async Task<SettingsTable> CreateSettingsTableAsync(string discriminator)
     {
-        await using var connection = new OracleConnection(OracleConnectionString);
-        await connection.OpenAsync();
-
-        // PL/SQL block so re-running against a warm container is harmless.
-        await connection.ExecuteAsync($"""
-            BEGIN
-              EXECUTE IMMEDIATE '
-                CREATE TABLE {SettingsTable} (
-                  DOMAIN_NAME  VARCHAR2(64)  NOT NULL,
-                  DATA_TYPE_ID VARCHAR2(128) NOT NULL,
-                  IS_ACTIVE    NUMBER(1)     DEFAULT 0 NOT NULL,
-                  CONSTRAINT PK_{SettingsTable} PRIMARY KEY (DOMAIN_NAME, DATA_TYPE_ID)
-                )';
-            EXCEPTION
-              WHEN OTHERS THEN
-                IF SQLCODE != -955 THEN RAISE; END IF;  -- -955 = name already used by an object
-            END;
-            """);
-    }
-
-    /// <summary>Replaces the settings rows for a domain with exactly the ones given.</summary>
-    public async Task SeedSettingsAsync(string domain, params (string DataTypeId, bool IsActive)[] settings)
-    {
-        await using var connection = new OracleConnection(OracleConnectionString);
-        await connection.OpenAsync();
-
-        await connection.ExecuteAsync(
-            $"DELETE FROM {SettingsTable} WHERE DOMAIN_NAME = :domain",
-            new { domain });
-
-        foreach (var (dataTypeId, isActive) in settings)
-        {
-            // One parameter set per row: Oracle binds positionally by default, so the order here must
-            // match the order the placeholders appear in the statement.
-            await connection.ExecuteAsync(
-                $"INSERT INTO {SettingsTable} (DOMAIN_NAME, DATA_TYPE_ID, IS_ACTIVE) " +
-                "VALUES (:domain, :dataTypeId, :isActive)",
-                new { domain, dataTypeId, isActive = isActive ? 1 : 0 });
-        }
-    }
-
-    /// <summary>Sets the active flag on one existing row, to exercise a live settings change.</summary>
-    public async Task SetActiveAsync(string domain, string dataTypeId, bool isActive)
-    {
-        await using var connection = new OracleConnection(OracleConnectionString);
-        await connection.OpenAsync();
-
-        await connection.ExecuteAsync(
-            $"UPDATE {SettingsTable} SET IS_ACTIVE = :isActive " +
-            "WHERE DOMAIN_NAME = :domain AND DATA_TYPE_ID = :dataTypeId",
-            new { isActive = isActive ? 1 : 0, domain, dataTypeId });
+        var sequence = Interlocked.Increment(ref _tableSequence);
+        var table = new SettingsTable(SettingsTable.NameFor(sequence, discriminator), OracleConnectionString);
+        await table.CreateAsync();
+        return table;
     }
 
     /// <summary>Creates the topics up front so the consumer never races topic auto-creation.</summary>

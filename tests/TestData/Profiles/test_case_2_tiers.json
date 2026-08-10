@@ -1,5 +1,15 @@
 {
   "dataTypeId": "directory",
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "directory",
+      "isActive": true
+    },
+    {
+      "dataTypeId": "archive",
+      "isActive": false
+    }
+  ],
   "input": {
     "id": "profile-002",
     "content": "mega account",

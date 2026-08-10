@@ -1,6 +1,15 @@
 {
   "dataTypeId": "retired-feed",
-  "dataTypeActive": false,
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "engagement",
+      "isActive": true
+    },
+    {
+      "dataTypeId": "retired-feed",
+      "isActive": false
+    }
+  ],
   "input": {
     "id": "post-008",
     "content": "from a retired feed",

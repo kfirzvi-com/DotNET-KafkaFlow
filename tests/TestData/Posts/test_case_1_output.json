@@ -1,5 +1,19 @@
 {
   "dataTypeId": "engagement",
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "retired-feed",
+      "isActive": false
+    },
+    {
+      "dataTypeId": "engagement",
+      "isActive": true
+    },
+    {
+      "dataTypeId": "backfill",
+      "isActive": false
+    }
+  ],
   "input": {
     "id": "post-001",
     "content": "hello kafka world",

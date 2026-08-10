@@ -52,6 +52,7 @@ public sealed class HostUnderTest : IAsyncDisposable
         InfrastructureFixture infrastructure,
         string domain,
         TopicSet topics,
+        SettingsTable settingsTable,
         IDictionary<string, string?>? overrides = null)
     {
         var settings = new Dictionary<string, string?>
@@ -78,8 +79,8 @@ public sealed class HostUnderTest : IAsyncDisposable
             [$"{DataTypeSettingsOptions.SectionName}:{nameof(DataTypeSettingsOptions.StartupRetryDelaySeconds)}"] = "1",
             [$"{OracleOptions.SectionName}:{nameof(OracleOptions.ConnectionString)}"] =
                 infrastructure.OracleConnectionString,
-            [$"{OracleOptions.SectionName}:{nameof(OracleOptions.SettingsTable)}"] =
-                InfrastructureFixture.SettingsTable,
+            // This test's own table, so its settings are invisible to every other test.
+            [$"{OracleOptions.SectionName}:{nameof(OracleOptions.SettingsTable)}"] = settingsTable.Name,
 
             // Port 0 lets the OS pick, so parallel hosts never collide on the metrics port.
             ["Metrics:Port"] = "0",

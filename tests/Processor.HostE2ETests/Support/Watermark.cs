@@ -77,15 +77,26 @@ public sealed class Watermark<TInput, TDomainData>
 
     /// <summary>The settings rows a watermarked run needs: the case's, plus the watermark's own.</summary>
     public static (string DataTypeId, bool IsActive)[] SettingsWith(
-        params (string DataTypeId, bool IsActive)[] caseSettings) =>
-        caseSettings.Append(Setting).ToArray();
+        params (string DataTypeId, bool IsActive)[] caseSettings)
+    {
+        var conflict = caseSettings.FirstOrDefault(
+            s => string.Equals(s.DataTypeId, DataTypeId, StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>Convenience for seeding both in one call.</summary>
+        if (conflict.DataTypeId is not null)
+        {
+            throw new InvalidOperationException(
+                $"A test case may not declare the reserved watermark data type '{DataTypeId}'.");
+        }
+
+        return caseSettings.Append(Setting).ToArray();
+    }
+
+    /// <summary>Seeds the case's settings plus the watermark's own into that case's table.</summary>
     public static Task SeedAsync(
-        InfrastructureFixture infrastructure,
+        SettingsTable table,
         string domain,
         params (string DataTypeId, bool IsActive)[] caseSettings) =>
-        infrastructure.SeedSettingsAsync(domain, SettingsWith(caseSettings));
+        table.SeedAsync(domain, SettingsWith(caseSettings));
 }
 
 /// <summary>Domain-specific message factories the watermark needs.</summary>

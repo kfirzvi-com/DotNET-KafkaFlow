@@ -25,16 +25,17 @@ public static class E2ETestCaseRunner
     {
         var testCase = TestCaseJson.Parse<TInput, TDomainData>(fileName, fileContent);
 
-        // A topic set per case keeps cases independent despite sharing one broker.
+        // Its own topics and its own Oracle table, so no case can observe or disturb another's.
         var discriminator = SanitizeForTopic(fileName);
         var topics = HostUnderTest.TopicsFor(domain, discriminator);
         await infrastructure.CreateTopicsAsync(topics.Input, topics.Output, topics.DeadLetter);
 
-        // Oracle holds only what this case declares plus the watermark's own row, so unknown/inactive
-        // data types are genuinely unknown/inactive in the database.
-        await Watermark<TInput, TDomainData>.SeedAsync(infrastructure, domain, SettingsFor(testCase));
+        // The table starts empty and receives exactly what the case declares (plus the watermark's own
+        // row), so an unlisted data type is genuinely absent from the database rather than left over.
+        var settingsTable = await infrastructure.CreateSettingsTableAsync(discriminator);
+        await Watermark<TInput, TDomainData>.SeedAsync(settingsTable, domain, SettingsFor(testCase));
 
-        await using var host = HostUnderTest.Create(infrastructure, domain, topics);
+        await using var host = HostUnderTest.Create(infrastructure, domain, topics, settingsTable);
         await host.StartAsync();
 
         using var kafka = new KafkaClient(infrastructure.BootstrapServers);
@@ -102,18 +103,12 @@ public static class E2ETestCaseRunner
         }
     }
 
-    private static (string, bool)[] SettingsFor<TInput, TDomainData>(
+    /// <summary>The rows to insert for this case, exactly as its <c>dataTypeSettings</c> declares them.</summary>
+    private static (string DataTypeId, bool IsActive)[] SettingsFor<TInput, TDomainData>(
         ProcessorTestCase<TInput, TDomainData> testCase)
         where TInput : InputMessage<TDomainData>
-        where TDomainData : class, IDomainData, new()
-    {
-        if (testCase.DataTypeId is null || !testCase.DataTypeRegistered)
-        {
-            return Array.Empty<(string, bool)>();
-        }
-
-        return new[] { (testCase.DataTypeId, testCase.DataTypeActive) };
-    }
+        where TDomainData : class, IDomainData, new() =>
+        testCase.DataTypeSettings.Select(s => (s.DataTypeId, s.IsActive)).ToArray();
 
     /// <summary>Turns a test-case file name into a legal, readable topic suffix.</summary>
     private static string SanitizeForTopic(string fileName)

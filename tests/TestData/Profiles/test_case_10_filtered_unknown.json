@@ -1,6 +1,15 @@
 {
   "dataTypeId": "never-configured",
-  "dataTypeRegistered": false,
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "directory",
+      "isActive": true
+    },
+    {
+      "dataTypeId": "retired-directory",
+      "isActive": false
+    }
+  ],
   "input": {
     "id": "profile-010",
     "content": "from an unknown directory",

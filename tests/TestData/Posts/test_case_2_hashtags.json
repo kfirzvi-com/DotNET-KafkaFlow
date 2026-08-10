@@ -1,5 +1,11 @@
 {
   "dataTypeId": "engagement",
+  "dataTypeSettings": [
+    {
+      "dataTypeId": "engagement",
+      "isActive": true
+    }
+  ],
   "input": {
     "id": "post-002",
     "content": "shipping #KafkaFlow with #dotnet and #KAFKAFLOW again",
@@ -19,7 +25,10 @@
       "network": "mastodon",
       "likes": 5,
       "shares": 5,
-      "hashtags": ["kafkaflow", "dotnet"],
+      "hashtags": [
+        "kafkaflow",
+        "dotnet"
+      ],
       "engagementScore": 20
     }
   }
